@@ -1,0 +1,19 @@
+[Unit]
+Description=Orchestrator Service
+Requires=docker.service
+After=docker.service network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/azureuser/orchestrator
+User=azureuser
+# Clean up potential leftovers from previous runs to avoid name conflicts
+ExecStartPre=-/usr/bin/docker rm -f orchestrator-app orchestrator-postgres
+ExecStartPre=-/usr/bin/docker compose down
+ExecStart=/usr/bin/docker compose up
+ExecStop=/usr/bin/docker compose down
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

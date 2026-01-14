@@ -1,0 +1,52 @@
+---
+# Playbook to restart database
+- name: Restart Database Remediation
+  hosts: localhost
+  gather_facts: yes
+  vars:
+    incident_number: "{{ incident_number | default('UNKNOWN') }}"
+    db_container: "postgres"
+  tasks:
+    - name: Log remediation start
+      debug:
+        msg: "Starting database restart for incident {{ incident_number }}"
+
+    - name: Check if Docker is available
+      command: which docker
+      ignore_errors: yes
+      register: docker_check
+
+    - name: Restart database container
+      shell: docker restart {{ db_container }}
+      when: docker_check.rc == 0
+      ignore_errors: yes
+      register: docker_restart
+
+    - name: Restart postgres service (if not containerized)
+      systemd:
+        name: postgresql
+        state: restarted
+      when: docker_check.rc != 0
+      ignore_errors: yes
+      register: systemd_restart
+
+    - name: Wait for database to be ready
+      wait_for:
+        host: localhost
+        port: 5432
+        delay: 5
+        timeout: 30
+      ignore_errors: yes
+
+    - name: Test database connection
+      shell: psql -h localhost -U postgres -c "SELECT 1;" 2>&1
+      ignore_errors: yes
+      register: db_test
+
+    - name: Report completion
+      debug:
+        msg: |
+          Database restart completed:
+          - Incident: {{ incident_number }}
+          - Docker Restart: {{ 'SUCCESS' if docker_restart is succeeded else 'SKIPPED' }}
+          - Connection Test: {{ 'PASSED' if db_test is succeeded else 'FAILED' }}

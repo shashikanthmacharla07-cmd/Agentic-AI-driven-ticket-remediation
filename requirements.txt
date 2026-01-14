@@ -1,0 +1,30 @@
+fastapi
+uvicorn
+httpx
+langchain
+langchain-core
+langchain-community
+langchain-ollama
+python-dateutil
+pydantic[dotenv]
+
+# Missing core dependencies
+asyncpg
+#aioredis
+redis[hiredis]
+
+# Optional but recommended for structured logging and error handling
+loguru
+python-dotenv
+
+# If you use SQLAlchemy or Alembic for migrations
+sqlalchemy
+alembic
+
+# If you use Jinja2 templates or HTML rendering
+jinja2
+
+# If you use pandas or numpy for data processing
+#pandas
+#numpy
+

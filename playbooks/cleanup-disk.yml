@@ -1,0 +1,54 @@
+---
+# Playbook to cleanup disk space
+- name: Cleanup Disk Space Remediation
+  hosts: localhost
+  gather_facts: yes
+  vars:
+    incident_number: "{{ incident_number | default('UNKNOWN') }}"
+  tasks:
+    - name: Log remediation start
+      debug:
+        msg: "Starting disk cleanup for incident {{ incident_number }}"
+
+    - name: Get current disk usage
+      shell: df -h / | tail -1
+      register: disk_before
+
+    - name: Archive old application logs
+      shell: find /var/log -name "*.log" -mtime +7 -exec gzip {} \;
+      ignore_errors: yes
+
+    - name: Clean Docker images (unused)
+      shell: docker image prune -f 2>/dev/null || true
+      ignore_errors: yes
+
+    - name: Clean Docker containers (stopped)
+      shell: docker container prune -f 2>/dev/null || true
+      ignore_errors: yes
+
+    - name: Clean pip cache
+      shell: pip cache purge 2>/dev/null || pip cache clear 2>/dev/null || true
+      ignore_errors: yes
+
+    - name: Clean system cache
+      shell: |
+        sync
+        echo 3 > /proc/sys/vm/drop_caches
+      become: yes
+      ignore_errors: yes
+
+    - name: Remove old temp files
+      shell: find /tmp -type f -atime +7 -delete 2>/dev/null || true
+      ignore_errors: yes
+
+    - name: Get disk usage after cleanup
+      shell: df -h / | tail -1
+      register: disk_after
+
+    - name: Report completion
+      debug:
+        msg: |
+          Disk cleanup completed:
+          - Incident: {{ incident_number }}
+          - Before: {{ disk_before.stdout }}
+          - After: {{ disk_after.stdout }}

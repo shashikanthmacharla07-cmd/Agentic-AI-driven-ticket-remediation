@@ -1,0 +1,51 @@
+---
+# Playbook to restart a service
+- name: Restart Service Remediation
+  hosts: localhost
+  gather_facts: yes
+  vars:
+    incident_number: "{{ incident_number | default('UNKNOWN') }}"
+    incident_system: "{{ incident_system | default('unknown_service') }}"
+    incident_severity: "{{ incident_severity | default('medium') }}"
+  tasks:
+    - name: Log remediation start
+      debug:
+        msg: "Starting service restart for incident {{ incident_number }} on {{ incident_system }}"
+
+    - name: Check if service exists
+      systemd:
+        name: "{{ incident_system }}"
+        state: started
+      register: service_result
+      ignore_errors: yes
+
+    - name: Restart the service
+      systemd:
+        name: "{{ incident_system }}"
+        state: restarted
+        daemon_reload: yes
+      when: service_result is defined
+      register: restart_result
+
+    - name: Verify service is running
+      systemd:
+        name: "{{ incident_system }}"
+        state: started
+      register: verify_result
+
+    - name: Service health check
+      wait_for:
+        host: localhost
+        port: 8000
+        delay: 5
+        timeout: 30
+      ignore_errors: yes
+      register: health_check
+
+    - name: Report remediation complete
+      debug:
+        msg: |
+          Remediation for {{ incident_number }} completed:
+          - Service: {{ incident_system }}
+          - Status: {{ verify_result.status.ActiveState | default('unknown') }}
+          - Health Check: {{ 'PASSED' if health_check is succeeded else 'FAILED' }}

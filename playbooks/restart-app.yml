@@ -1,0 +1,48 @@
+---
+# Playbook to restart application
+- name: Restart Application Remediation
+  hosts: localhost
+  gather_facts: yes
+  vars:
+    incident_number: "{{ incident_number | default('UNKNOWN') }}"
+    incident_system: "{{ incident_system | default('app') }}"
+  tasks:
+    - name: Log remediation start
+      debug:
+        msg: "Starting application restart for incident {{ incident_number }}"
+
+    - name: Stop application
+      command: pkill -f "{{ incident_system }}"
+      ignore_errors: yes
+
+    - name: Wait for process termination
+      wait_for:
+        timeout: 10
+
+    - name: Start application
+      shell: "systemctl start {{ incident_system }} || docker restart {{ incident_system }} || python -m app &"
+      ignore_errors: yes
+      register: start_result
+
+    - name: Wait for application to be ready
+      wait_for:
+        host: localhost
+        port: 8000
+        delay: 5
+        timeout: 30
+      ignore_errors: yes
+
+    - name: Verify application health
+      uri:
+        url: http://localhost:8000/health
+        method: GET
+        status_code: 200
+      ignore_errors: yes
+      register: health_check
+
+    - name: Report completion
+      debug:
+        msg: |
+          Application restart completed:
+          - Incident: {{ incident_number }}
+          - Health Check: {{ 'PASSED' if health_check is succeeded else 'FAILED' }}
