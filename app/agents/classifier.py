@@ -90,10 +90,10 @@ class ClassifierAgent:
              "You are a classification agent for IT incidents. You have access to the following AWX playbooks: {playbooks}.\n"
              "Classify the incident based on its description and suggest the most relevant labels.\n"
              "Specific labeling instructions:\n"
-             "- For high CPU issues, always include 'high_cpu'.\n"
+             "- For high CPU issues, always include 'high_cpu'. ALERT: High CPU/Memory is NOT 'server_down' unless the node is unreachable.\n"
              "- For high memory issues, always include 'high_memory'.\n"
              "- For disk or filesystem issues (disk full, /var full, etc.), use labels: var_full, tmp_full, disk_full, storage_full, filesystem_cleanup.\n"
-             "- For server down: 'server_down'. Database: 'database_down'. Network: 'network_error'.\n"
+             "- For server down: 'server_down' (Use ONLY if host is offline/unreachable). Database: 'database_down'. Network: 'network_error'.\n"
              "Output only valid JSON with keys: labels (array of strings), severity (string: P1|P2|P3|P4), eligibility (string: auto or human-only), confidence (number 0-1)."),
             ("user",
              "short_description: {short}\n"

@@ -25,7 +25,7 @@ class AWXClient:
         self.timeout = timeout
         self.verify_ssl = verify_ssl
         self._cache = {}
-        self._cache_ttl = 300  # 5 minutes
+        self._cache_ttl = 60  # 1 minute
 
     def _headers(self) -> Dict[str, str]:
         return {

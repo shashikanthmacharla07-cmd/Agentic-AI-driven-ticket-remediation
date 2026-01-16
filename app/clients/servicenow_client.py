@@ -103,7 +103,7 @@ class ServiceNowClient:
         payload = {
             "work_notes": work_notes,
             "close_notes": resolution_summary,
-            "close_code": "Resolved by caller",
+            "close_code": "Resolved by Agentic AI driven Incident Remediation",
             "state": "7",  # Closed
         }
         async with self._client() as client:

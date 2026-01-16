@@ -9,6 +9,9 @@ from langchain_core.output_parsers import JsonOutputParser
 from app.models import PipelineContext, Plan
 from app.data.repositories import PlanRepository
 from app.clients.awx_client import AWXClient
+from app.agents.PlaybookSelectionValidator import validate_playbook_selection
+
+
 
 llm = ChatOllama(
     model=os.getenv("LLM_MODEL", "llama3"),
@@ -17,10 +20,16 @@ llm = ChatOllama(
 )
 
 prompt = ChatPromptTemplate.from_messages([
-    ("system", "You are a remediation planner. Choose the most suitable AWX playbook for the incident. Return only JSON."),
-    ("user", "Incident: {incident}\nClassification: {classification}\nAvailable playbooks: {playbooks}\n\n"
-             "Return JSON with keys: playbook_id (string), prechecks (list), rollback_steps (list), risk_score (0-1), eligibility (auto or human-only).")
-])
+            ("system",
+             "You are a remediation planner. You have access to the following AWX playbooks: {playbooks}.\n"
+             "Analyze the incident and classification, then choose the most suitable playbook from the list.\n"
+             "If no playbook is suitable, set playbook_id to '0' and playbook_name to 'No suitable playbook'.\n"
+             "Return only JSON. Always include both playbook_id and playbook_name in your output."),
+            ("user",
+             "Incident: {incident}\nClassification: {classification}\n\n"
+             "Return JSON with keys: playbook_id (string), playbook_name (string), prechecks (list), rollback_steps (list), risk_score (0-1), eligibility (auto or human-only)."
+            )
+        ])
 
 parser = JsonOutputParser(pydantic_object=Plan)
 
@@ -28,12 +37,11 @@ class PlannerAgent:
     def __init__(self, repo: PlanRepository, awx_client: AWXClient):
         self.repo = repo
         self.awx_client = awx_client
-
-    def _get_playbook_for_classification(self, category: str) -> dict:
-        """Map incident category to appropriate AWX playbook ID."""
-        playbook_mapping = {
-            "server_down": {"id": "7", "name": "Demo Job Template", "description": "Demo playbook for server remediation"},
-            "high_cpu": {"id": "9", "name": "check_cpu_utilization", "description": "Check CPU utilization on Linux"},
+        self.known_playbooks = {
+            # Removed hardcoded 'server_down' -> 'Demo Job Template' mapping to prevent auto-selection
+            # "server_down": {"id": "7", "name": "Demo Job Template", "description": "Demo playbook for server remediation"},
+            # Updated: use name for lookup, ID is placeholder to be resolved dynamically
+            "high_cpu": {"id": "dynamic", "name": "Linux_Kill_CPU_Utilization", "description": "Kill high CPU consuming processes on Linux"},
             "high_memory": {"id": "7", "name": "Demo Job Template", "description": "Memory issues require further investigation or service restart"},
             "disk_full": {"id": "10", "name": "Clean up var filesystem", "description": "Archive old logs and clean up disk space on /var"},
             "storage_full": {"id": "10", "name": "Clean up var filesystem", "description": "Clean up /var filesystem"},
@@ -54,20 +62,21 @@ class PlannerAgent:
             "application_crash": {"id": "7", "name": "Demo Job Template", "description": "Restart application"},
         }
 
-        # Catch-all for storage related labels
+    def _get_playbook_for_classification(self, category: str) -> dict:
+        """Map incident category to appropriate AWX playbook ID."""
+        # storage related labels
         if any(keyword in category.lower() for keyword in ["disk", "storage", "filesystem", "space"]):
-            return playbook_mapping.get("disk_full")
+            return self.known_playbooks.get("disk_full")
 
-        return playbook_mapping.get(category, {"id": "7", "name": "Demo Job Template", "description": "Default remediation playbook"})
+        return self.known_playbooks.get(category)
 
-    def _filter_playbooks(self, ctx: PipelineContext, playbooks: List[dict], suggested: dict) -> List[dict]:
+    def _filter_playbooks(self, ctx: PipelineContext, playbooks: List[dict]) -> List[dict]:
         """
         Filter playbooks to reduce noise for the LLM.
         Criteria:
-        1. Always include the suggested playbook.
-        2. Always include a default/demo playbook if available (ID 7).
-        3. Score others by keyword matching with incident description/classification.
-        4. Return top N (e.g. 5).
+        1. Always include a default/demo playbook if available (ID 7).
+        2. Score others by keyword matching with incident description/classification.
+        3. Return top N (e.g. 5).
         """
         if not playbooks:
             return []
@@ -78,29 +87,15 @@ class PlannerAgent:
              text += " " + " ".join(ctx.classification.labels)
         
         scored = []
-        keep_ids = set()
-
-        # 1. Suggested
-        if suggested:
-            keep_ids.add(str(suggested.get("id")))
         
-        # 2. Default (ID 7 - Demo Job Template)
-        keep_ids.add("7")
-
         for pb in playbooks:
-            pid = str(pb.get("id"))
-            if pid in keep_ids:
-                continue
-            
-            # 3. Score
+            # Score
             score = 0
             pb_text = (pb.get("name", "") + " " + pb.get("description", "")).lower()
             
-            # Simple token overlap (could be improved)
-            # Check for tokens in incident text
-            # We'll just check if significant words from incident appear in playbook text
-            # For simplicity in this heuristic: check if any word > 3 chars from incident is in pb
-            incident_tokens = set(w for w in text.split() if len(w) > 3)
+            # Simple token overlap
+            # Updated: changed > 3 to >= 2 to capture 'cpu', 'vm', etc.
+            incident_tokens = set(w for w in text.split() if len(w) >= 2)
             matches = sum(1 for t in incident_tokens if t in pb_text)
             score += matches
 
@@ -109,21 +104,10 @@ class PlannerAgent:
         # Sort by score desc
         scored.sort(key=lambda x: x[0], reverse=True)
         
-        # Take top 3 from scored
-        top_candidates = [x[1] for x in scored[:3]]
+        # Take top 5 from scored (increased from 3 to give LLM more options)
+        top_candidates = [x[1] for x in scored[:5]]
 
-        # Construct final list
-        final_list = []
-        
-        # Add force-kept playbooks first to ensure they are present
-        for pb in playbooks:
-            if str(pb.get("id")) in keep_ids:
-                final_list.append(pb)
-        
-        for pb in top_candidates:
-            final_list.append(pb)
-            
-        return final_list
+        return top_candidates
 
     async def run(self, ctx: PipelineContext, playbooks: List[dict] = None) -> PipelineContext:
         if not ctx.classification:
@@ -132,50 +116,24 @@ class PlannerAgent:
         number = ctx.incident.number
         playbooks = playbooks or []
 
-        # 1. Deterministic suggestion based on classification labels
-        suggested_playbook = None
-        for label in ctx.classification.labels:
-            pb = self._get_playbook_for_classification(label)
-            if pb and pb.get("id") != "7": # Prefer specific over default
-                suggested_playbook = pb
-                break
-        
-        if not suggested_playbook:
-            suggested_playbook = self._get_playbook_for_classification("default")
-        
-        # Final Safeguard: Double check raw description for storage keywords regardless of labels
-        incident_text = f"{ctx.incident.short_description} {ctx.incident.description}".lower()
-        if any(k in incident_text for k in ["/var", "/tmp", "disk full", "storage full", "filesystem full", "out of space"]):
-            print("Fallback: Storage keywords detected in description. Forcing disk cleanup playbook ID 10.")
-            suggested_playbook = {"id": "10", "name": "Clean up var filesystem", "description": "Forced fallback for storage issue"}
-
-        # VALIDATION STEP: Ensure suggested playbook actually exists in the available list
-        available_ids = set(str(p.get("id")) for p in playbooks)
-        if str(suggested_playbook.get("id")) not in available_ids:
-            print(f"Warning: Suggested playbook {suggested_playbook['name']} (ID: {suggested_playbook['id']}) not found in available playbooks.")
-            # Fallback strategy:
-            # 1. Try to find the 'default' playbook ID 7
-            if "7" in available_ids:
-                 print("Fallback: Using default playbook ID 7.")
-                 suggested_playbook = {"id": "7", "name": "Demo Job Template", "description": "Default remediation playbook"}
-            # 2. If valid playbooks exist, pick the first one just to have a valid prompt context
-            elif playbooks:
-                 print(f"Fallback: Default ID 7 also missing. Using first available: {playbooks[0].get('name')}")
-                 suggested_playbook = playbooks[0]
-            else:
-                 # No playbooks available at all - let it proceed, but likely will fail or need empty handling
-                 print("Error: No playbooks available to suggest.")
-                 pass # suggested_playbook remains as is, but loop below will fail or prompt will be weird. 
-                      # But empty playbooks usually handled earlier or irrelevant.
-
-        print(f"Deterministic suggestion: {suggested_playbook['name']} (ID: {suggested_playbook['id']})")
+        # Removed Deterministic Suggestion Logic as per user request.
+        # rely purely on LLM selection.
 
         # FILTERING STEP
-        filtered_playbooks = self._filter_playbooks(ctx, playbooks, suggested_playbook)
+        filtered_playbooks = self._filter_playbooks(ctx, playbooks)
         
-        formatted_playbooks = [
-            f"ID: {pb['id']}, Name: {pb['name']}" for pb in filtered_playbooks
-        ]
+        formatted_playbooks = []
+        for pb in filtered_playbooks:
+            desc = pb.get("description", "")
+            
+            # Enrich description: PREFER known playbook description if available
+            # This ensures high quality descriptions ("Kill high CPU...") override poor AWX descriptions ("processes which consumes CPU")
+            for known in self.known_playbooks.values():
+                if known.get("name") == pb.get("name"):
+                    desc = known.get("description")
+                    break
+            
+            formatted_playbooks.append(f"ID: {pb['id']}, Name: {pb['name']}, Description: {desc or 'N/A'}")
         print(f"Playbooks sent to LLM ({len(formatted_playbooks)}/{len(playbooks)}): {formatted_playbooks}")
 
         # Prepare prompt inputs
@@ -183,16 +141,14 @@ class PlannerAgent:
             "incident": ctx.incident.dict() if ctx.incident else {},
             "classification": ctx.classification.dict() if ctx.classification else {},
             "playbooks": '\n'.join(formatted_playbooks),
-            "suggested_id": suggested_playbook["id"],
-            "suggested_name": suggested_playbook["name"]
         }
 
-        # Compose prompt with explicit suggestion
-        prompt_with_suggestions = ChatPromptTemplate.from_messages([
+        # Compose prompt WITHOUT explicit suggestion
+        prompt_pure_llm = ChatPromptTemplate.from_messages([
             ("system",
              "You are a remediation planner. You have access to the following AWX playbooks: {playbooks}.\n"
-             "Based on the classification labels, the RECOMMENDED playbook is: ID {suggested_id} ({suggested_name}).\n"
-             "If this recommendation is appropriate, use it. Otherwise, choose the most suitable playbook.\n"
+             "Analyze the incident and classification, then choose the most suitable playbook from the list.\n"
+             "If no playbook is suitable, set playbook_id to '0' and playbook_name to 'No suitable playbook'.\n"
              "Return only JSON. Always include both playbook_id and playbook_name in your output."),
             ("user",
              "Incident: {incident}\nClassification: {classification}\n\n"
@@ -200,7 +156,7 @@ class PlannerAgent:
             )
         ])
 
-        msg = await llm.ainvoke(prompt_with_suggestions.format(**inputs))
+        msg = await llm.ainvoke(prompt_pure_llm.format(**inputs))
         print(f"Planner LLM output: {repr(msg.content)}")
 
         # Parse structured output
@@ -215,24 +171,34 @@ class PlannerAgent:
 
             print(f"Post-parsing plan data: {plan_data}")
 
+            # Validate/Override with PlaybookSelectionValidator
+            if ctx.classification and ctx.classification.labels:
+                 plan_data = validate_playbook_selection(plan_data, ctx.classification.labels, self.known_playbooks)
+
             # Ensure prechecks and rollback_steps are lists
             if not plan_data.get("prechecks"):
                 plan_data["prechecks"] = []
             if not plan_data.get("rollback_steps"):
                 plan_data["rollback_steps"] = []
             
-            selected_id = str(plan_data.get("playbook_id"))
-            
-            # If we had a specific suggestion (not default) and LLM picked something else, override
-            # OR if the LLM picked something that is NOT in the available list (hallucination), override.
-            if (suggested_playbook["id"] != "7" and selected_id != suggested_playbook["id"]) or (selected_id not in available_ids):
-                print(f"Overriding LLM selection {selected_id} (unavailable/mismatch) with valid suggestion {suggested_playbook['id']}")
-                plan_data["playbook_id"] = suggested_playbook["id"]
-                plan_data["playbook_name"] = suggested_playbook["name"]
-            
             if "playbook_id" in plan_data:
                 plan_data["playbook_id"] = str(plan_data["playbook_id"])
             
+            # Validating LLM selection against available IDs
+            available_ids = set(str(p.get("id")) for p in playbooks)
+            selected_id = str(plan_data.get("playbook_id"))
+
+            if selected_id not in available_ids and selected_id != '0':
+                 print(f"Warning: LLM selected ID {selected_id} which is not in available playbooks.")
+                 # We could raise error or try to find by name.
+                 # Try finding by name if ID mismatch
+                 match = next((p for p in playbooks if p["name"] == plan_data.get("playbook_name")), None)
+                 if match:
+                     print(f"Resolved name {plan_data['playbook_name']} to ID {match['id']}")
+                     plan_data['playbook_id'] = str(match['id'])
+                 else:
+                     raise HTTPException(status_code=400, detail=f"PlannerAgent: Selected playbook ID {selected_id} not available.")
+
             # Ensure playbook_name is present
             if not plan_data.get("playbook_name"):
                  plan_data["playbook_name"] = next((pb["name"] for pb in playbooks if str(pb["id"]) == plan_data["playbook_id"]), "unknown")
