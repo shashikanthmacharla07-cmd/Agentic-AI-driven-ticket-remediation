@@ -149,6 +149,25 @@ class PlannerAgent:
             print("Fallback: Storage keywords detected in description. Forcing disk cleanup playbook ID 10.")
             suggested_playbook = {"id": "10", "name": "Clean up var filesystem", "description": "Forced fallback for storage issue"}
 
+        # VALIDATION STEP: Ensure suggested playbook actually exists in the available list
+        available_ids = set(str(p.get("id")) for p in playbooks)
+        if str(suggested_playbook.get("id")) not in available_ids:
+            print(f"Warning: Suggested playbook {suggested_playbook['name']} (ID: {suggested_playbook['id']}) not found in available playbooks.")
+            # Fallback strategy:
+            # 1. Try to find the 'default' playbook ID 7
+            if "7" in available_ids:
+                 print("Fallback: Using default playbook ID 7.")
+                 suggested_playbook = {"id": "7", "name": "Demo Job Template", "description": "Default remediation playbook"}
+            # 2. If valid playbooks exist, pick the first one just to have a valid prompt context
+            elif playbooks:
+                 print(f"Fallback: Default ID 7 also missing. Using first available: {playbooks[0].get('name')}")
+                 suggested_playbook = playbooks[0]
+            else:
+                 # No playbooks available at all - let it proceed, but likely will fail or need empty handling
+                 print("Error: No playbooks available to suggest.")
+                 pass # suggested_playbook remains as is, but loop below will fail or prompt will be weird. 
+                      # But empty playbooks usually handled earlier or irrelevant.
+
         print(f"Deterministic suggestion: {suggested_playbook['name']} (ID: {suggested_playbook['id']})")
 
         # FILTERING STEP
@@ -205,8 +224,9 @@ class PlannerAgent:
             selected_id = str(plan_data.get("playbook_id"))
             
             # If we had a specific suggestion (not default) and LLM picked something else, override
-            if suggested_playbook["id"] != "7" and selected_id != suggested_playbook["id"]:
-                print(f"Overriding LLM selection {selected_id} with deterministic suggestion {suggested_playbook['id']}")
+            # OR if the LLM picked something that is NOT in the available list (hallucination), override.
+            if (suggested_playbook["id"] != "7" and selected_id != suggested_playbook["id"]) or (selected_id not in available_ids):
+                print(f"Overriding LLM selection {selected_id} (unavailable/mismatch) with valid suggestion {suggested_playbook['id']}")
                 plan_data["playbook_id"] = suggested_playbook["id"]
                 plan_data["playbook_name"] = suggested_playbook["name"]
             

@@ -23,6 +23,7 @@ class Classification(BaseModel):
 
 class Plan(BaseModel):
     playbook_id: str
+    playbook_name: str
     prechecks: List[str]
     rollback_steps: List[str]
     risk_score: float

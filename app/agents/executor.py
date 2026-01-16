@@ -41,8 +41,8 @@ class ExecutorAgent:
             # Return mock job ID for testing when AWX is unavailable
             import uuid
             job_id = str(abs(hash(uuid.uuid4())) % 10000)
-            status = "successful"  # Use 'successful' instead of 'partial'
-            events = [{"event": "mock", "message": f"Mock execution for testing (AWX unavailable: {str(e)})"}]
+            status = "failed"  # Correctly report failure
+            events = [{"event": "error", "message": f"Execution failed (AWX unavailable: {str(e)})"}]
             finished_at = None
 
         execution = ExecutionLog(
