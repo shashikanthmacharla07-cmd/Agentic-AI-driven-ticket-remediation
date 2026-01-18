@@ -29,6 +29,26 @@ class IntakeAgent:
 
     # Incident number generation removed; always use number from ServiceNow
 
+    def _detect_os(self, text: str) -> str:
+        if not text:
+            return None
+        
+        words = text.lower().split()
+        for word in words:
+            # Check for specific prefixes mentioned in requirements
+            # "lin" -> Linux, "win" -> Windows
+            # We look for words that are likely hostnames (e.g. contain dashes or digits, or just start with these prefixes)
+            # Simplest implementation based on user prompt "first 3 letters in the hostname"
+            
+            # Clean common punctuation from end of word
+            clean_word = word.rstrip(".,;:?!")
+            
+            if clean_word.startswith("lin"):
+                return "linux"
+            elif clean_word.startswith("win"):
+                return "windows"
+        return None
+
     async def run(self, ctx: PipelineContext, raw_incident: dict) -> PipelineContext:
 
         # Always normalize and set incident number from ServiceNow
@@ -58,6 +78,12 @@ class IntakeAgent:
         except Exception as e:
             print(f"Failed to parse or create incident: {e}")
             raise HTTPException(status_code=400, detail=f"Failed to parse or create incident: {e}")
+
+        # Detect OS from short_description
+        detected_os = self._detect_os(incident.short_description)
+        if detected_os:
+            incident.context["os"] = detected_os
+            print(f"Detected OS: {detected_os}")
 
         # Only persist if incident was created
         if 'incident' in locals():

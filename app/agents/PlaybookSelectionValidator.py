@@ -1,5 +1,5 @@
 # PlaybookSelectionValidator.py
-def validate_playbook_selection(plan_data: dict, labels: list, known_playbooks: dict) -> dict:
+def validate_playbook_selection(plan_data: dict, labels: list, known_playbooks: dict, os_type: str = None) -> dict:
     """
     Ensure the LLM-selected playbook matches incident labels.
     If mismatch, override with correct mapping.
@@ -8,9 +8,19 @@ def validate_playbook_selection(plan_data: dict, labels: list, known_playbooks: 
 
     # CPU incidents → enforce CPU playbook
     if "high_cpu" in labels:
-        cpu_pb = known_playbooks.get("high_cpu")
-        if plan_data.get("playbook_name") != cpu_pb["name"]:
-            print(f"[Validator] Override: Incident label 'high_cpu' requires {cpu_pb['name']}")
+        # Select playbook based on OS
+        target_key = "high_cpu" # default to Linux/Generic
+        if os_type and os_type.lower() == "windows":
+             target_key = "windows_high_cpu"
+        
+        # Fallback if windows key missing but windows requested
+        if target_key not in known_playbooks:
+            print(f"[Validator] Warning: {target_key} not in known_playbooks, falling back to high_cpu")
+            target_key = "high_cpu"
+
+        cpu_pb = known_playbooks.get(target_key)
+        if cpu_pb and plan_data.get("playbook_name") != cpu_pb["name"]:
+            print(f"[Validator] Override: Incident label 'high_cpu' (OS: {os_type}) requires {cpu_pb['name']}")
             plan_data["playbook_id"] = str(cpu_pb["id"])
             plan_data["playbook_name"] = cpu_pb["name"]
             plan_data["description"] = cpu_pb["description"]

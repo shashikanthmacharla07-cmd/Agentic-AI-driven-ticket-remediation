@@ -19,6 +19,7 @@ prompt = ChatPromptTemplate.from_messages([
     ("system",
      "You are a classification agent for IT incidents. Output only valid JSON with keys: labels (array of strings), severity (string: P1|P2|P3|P4), eligibility (string: auto or human-only), confidence (number 0-1).\n"
      "If the incident is about high CPU, CPU utilization, or CPU usage, always include 'high_cpu' in labels.\n"
+     "If the incident is about 'VM availability', 'availability' issues, or 'VM unreachable', always include 'vm_availability' and 'high_cpu' in labels.\n"
      "If the incident is about high memory, memory usage, or memory utilization, always include 'high_memory' in labels.\n"
      "If the incident is about disk or filesystem issues (disk full, no space, cleanup needed, /var full, /tmp full), use labels: var_full (if /var is mentioned), tmp_full (if /tmp is mentioned), disk_full, storage_full, filesystem_cleanup.\n"
      "For server down, use 'server_down'. For database down, use 'database_down'. For network issues, use 'network_error'. For application crash, use 'application_crash'.\n"
@@ -61,6 +62,11 @@ class ClassifierAgent:
         # CPU checks
         if any(k in text_lower for k in ["cpu", "utilization", "processor"]):
             labels.append("high_cpu")
+            
+        # VM Availability checks
+        if any(k in text_lower for k in ["vm availability", "availability", "vm unreachable"]):
+            labels.append("vm_availability")
+            labels.append("high_cpu") # Requirement: invoke CPU playbook for VM availability
             
         # Memory checks
         if any(k in text_lower for k in ["memory", "ram", "memory_usage"]):

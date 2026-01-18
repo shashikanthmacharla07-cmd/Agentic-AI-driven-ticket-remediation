@@ -42,6 +42,7 @@ class PlannerAgent:
             # "server_down": {"id": "7", "name": "Demo Job Template", "description": "Demo playbook for server remediation"},
             # Updated: use name for lookup, ID is placeholder to be resolved dynamically
             "high_cpu": {"id": "dynamic", "name": "Linux_Kill_CPU_Utilization", "description": "Kill high CPU consuming processes on Linux"},
+            "windows_high_cpu": {"id": "dynamic", "name": "Windows_Kill_CPU_Utilization", "description": "Kill high CPU consuming processes on Windows"},
             "high_memory": {"id": "7", "name": "Demo Job Template", "description": "Memory issues require further investigation or service restart"},
             "disk_full": {"id": "10", "name": "Clean up var filesystem", "description": "Archive old logs and clean up disk space on /var"},
             "storage_full": {"id": "10", "name": "Clean up var filesystem", "description": "Clean up /var filesystem"},
@@ -80,6 +81,22 @@ class PlannerAgent:
         """
         if not playbooks:
             return []
+
+        # OS Filtering
+        detected_os = ctx.incident.context.get("os")
+        if detected_os:
+            print(f"Applying OS filter for: {detected_os}")
+            filtered_by_os = []
+            for pb in playbooks:
+                pb_text = (pb.get("name", "") + " " + pb.get("description", "")).lower()
+                # If OS is linux, skip windows playbooks
+                if detected_os == "linux" and "windows" in pb_text:
+                    continue
+                # If OS is windows, skip linux playbooks
+                if detected_os == "windows" and "linux" in pb_text:
+                    continue
+                filtered_by_os.append(pb)
+            playbooks = filtered_by_os
 
         # Keywords from incident
         text = (ctx.incident.short_description + " " + ctx.incident.description).lower()
@@ -172,8 +189,10 @@ class PlannerAgent:
             print(f"Post-parsing plan data: {plan_data}")
 
             # Validate/Override with PlaybookSelectionValidator
+            # Validate/Override with PlaybookSelectionValidator
             if ctx.classification and ctx.classification.labels:
-                 plan_data = validate_playbook_selection(plan_data, ctx.classification.labels, self.known_playbooks)
+                 detected_os = ctx.incident.context.get("os")
+                 plan_data = validate_playbook_selection(plan_data, ctx.classification.labels, self.known_playbooks, os_type=detected_os)
 
             # Ensure prechecks and rollback_steps are lists
             if not plan_data.get("prechecks"):

@@ -103,7 +103,9 @@ class ServiceNowClient:
         payload = {
             "work_notes": work_notes,
             "close_notes": resolution_summary,
-            "close_code": "Resolved by Agentic AI driven Incident Remediation",
+            # 'close_code' must match a valid choice in ServiceNow. 
+            # Valid values found: 'Solution provided', 'Resolved by caller', 'Workaround provided', etc.
+            "close_code": "Solution provided",
             "state": "7",  # Closed
         }
         async with self._client() as client:
