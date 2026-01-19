@@ -37,9 +37,9 @@ class ExecutionLog(BaseModel):
     finished_at: Optional[str] = None
 
 class ValidationSignals(BaseModel):
-    metrics: Dict = Field(default_factory=dict)
-    logs: Dict = Field(default_factory=dict)
-    synthetics: Dict = Field(default_factory=dict)
+    metrics: Optional[Dict] = Field(default_factory=dict)
+    logs: Optional[Dict] = Field(default_factory=dict)
+    synthetics: Optional[Dict] = Field(default_factory=dict)
     decision: Literal["success", "partial", "rollback", "escalate"]
 
 class Closure(BaseModel):
