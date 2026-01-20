@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Architecture Diagram</title>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+        mermaid.initialize({ startOnLoad: true });
+    </script>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background-color: white;
+            font-family: sans-serif;
+        }
+
+        #diagram {
+            display: inline-block;
+        }
+
+        #btn-download {
+            margin-top: 20px;
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="controls">
+        <button id="btn-download" onclick="downloadImage()">Download PNG</button>
+    </div>
+    <div class="mermaid" id="diagram">
+        graph TD
+        subgraph External Systems
+        SNOW[ServiceNow Instance]
+        AWX[Ansible AWX]
+        OLLAMA[Ollama LLM Service]
+        end
+
+        subgraph Orchestrator Application
+        subgraph Core Components
+        API[FastAPI Main]
+        SCHED[Incident Scheduler]
+        ORCH[Orchestration Agent]
+        FETCHER[ServiceNow Fetcher]
+        end
+
+        subgraph Agents
+        INTAKE[Intake Agent]
+        CLASS[Classifier Agent]
+        PLAN[Planner Agent]
+        EXEC[Executor Agent]
+        VALID[Validator Agent]
+        CLOSE[Closure Agent]
+        end
+
+        subgraph Data Layer
+        REPO[Repositories]
+        DB[(PostgreSQL)]
+        end
+        end
+
+        %% Data Flow
+        SCHED -- "Polls (every 30s)" --> FETCHER
+        FETCHER -- "Fetch Incidents" --> SNOW
+        FETCHER -- "Returns Incidents" --> SCHED
+        SCHED -- "Triggers" --> ORCH
+
+        %% Agent orchestration
+        ORCH -- "1. Contextualize" --> INTAKE
+        ORCH -- "2. Analyze" --> CLASS
+        ORCH -- "3. Select Strategy" --> PLAN
+        ORCH -- "4. Execute" --> EXEC
+        ORCH -- "5. Verify" --> VALID
+        ORCH -- "6. Resolve" --> CLOSE
+
+        %% Agent dependencies
+        INTAKE -. "Parse & Normalize" .-> OLLAMA
+        CLASS -. "Classify" .-> OLLAMA
+        PLAN -. "Select Playbook" .-> OLLAMA
+        PLAN -- "List Templates" --> AWX
+        EXEC -- "Launch Job" --> AWX
+        VALID -. "Evaluate Success" .-> OLLAMA
+        CLOSE -. "Summarize" .-> OLLAMA
+        CLOSE -- "Update Ticket" --> SNOW
+
+        %% Persistence
+        INTAKE --> REPO
+        CLASS --> REPO
+        PLAN --> REPO
+        EXEC --> REPO
+        VALID --> REPO
+        CLOSE --> REPO
+        REPO -- "Persist State" --> DB
+    </div>
+
+    <script>
+        function downloadImage() {
+            const svg = document.querySelector('.mermaid svg');
+            if (!svg) {
+                alert('Diagram not rendered yet');
+                return;
+            }
+
+            // Get the bounding box of the SVG content
+            const bbox = svg.getBoundingClientRect();
+            const width = bbox.width;
+            const height = bbox.height;
+
+            const canvas = document.createElement('canvas');
+            // Scale up for better resolution
+            const scale = 2;
+            canvas.width = width * scale;
+            canvas.height = height * scale;
+
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = 'white';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            const svgData = new XMLSerializer().serializeToString(svg);
+            const img = new Image();
+
+            const svgBlob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
+            const url = URL.createObjectURL(svgBlob);
+
+            img.onload = function () {
+                ctx.scale(scale, scale);
+                ctx.drawImage(img, 0, 0);
+                URL.revokeObjectURL(url);
+
+                const a = document.createElement('a');
+                a.download = 'architecture_diagram.png';
+                a.href = canvas.toDataURL('image/png');
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                console.log('Download triggered');
+            };
+
+            img.src = url;
+        }
+    </script>
+</body>
+
+</html>

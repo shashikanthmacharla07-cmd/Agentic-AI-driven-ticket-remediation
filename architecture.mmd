@@ -1,0 +1,62 @@
+graph TD
+    subgraph External Systems
+        SNOW[ServiceNow Instance]
+        AWX[Ansible AWX]
+        OLLAMA[Ollama LLM Service]
+    end
+
+    subgraph Orchestrator Application
+        subgraph Core Components
+            API[FastAPI Main]
+            SCHED[Incident Scheduler]
+            ORCH[Orchestration Agent]
+            FETCHER[ServiceNow Fetcher]
+        end
+
+        subgraph Agents
+            INTAKE[Intake Agent]
+            CLASS[Classifier Agent]
+            PLAN[Planner Agent]
+            EXEC[Executor Agent]
+            VALID[Validator Agent]
+            CLOSE[Closure Agent]
+        end
+
+        subgraph Data Layer
+            REPO[Repositories]
+            DB[(PostgreSQL)]
+        end
+    end
+
+    %% Data Flow
+    SCHED -- "Polls (every 30s)" --> FETCHER
+    FETCHER -- "Fetch Incidents" --> SNOW
+    FETCHER -- "Returns Incidents" --> SCHED
+    SCHED -- "Triggers" --> ORCH
+
+    %% Agent orchestration
+    ORCH -- "1. Contextualize" --> INTAKE
+    ORCH -- "2. Analyze" --> CLASS
+    ORCH -- "3. Select Strategy" --> PLAN
+    ORCH -- "4. Execute" --> EXEC
+    ORCH -- "5. Verify" --> VALID
+    ORCH -- "6. Resolve" --> CLOSE
+
+    %% Agent dependencies
+    INTAKE -. "Parse & Normalize" .-> OLLAMA
+    CLASS -. "Classify" .-> OLLAMA
+    PLAN -. "Select Playbook" .-> OLLAMA
+    PLAN -- "List Templates" --> AWX
+    EXEC -- "Launch Job" --> AWX
+    VALID -. "Evaluate Success" .-> OLLAMA
+    CLOSE -. "Summarize" .-> OLLAMA
+    CLOSE -- "Update Ticket" --> SNOW
+
+    %% Persistence
+    INTAKE --> REPO
+    CLASS --> REPO
+    PLAN --> REPO
+    EXEC --> REPO
+    VALID --> REPO
+    CLOSE --> REPO
+    REPO -- "Persist State" --> DB
