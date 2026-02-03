@@ -23,7 +23,7 @@ async def health(request: Request):
         async with httpx.AsyncClient(timeout=30.0) as client:
             r = await client.post(
                 f"{ollama_host}/api/generate",
-                json={"model": "gemma:2b", "prompt": sample_prompt, "stream": False}
+                json={"model": "phi:2.7b", "prompt": sample_prompt, "stream": False}
             )
             latency = round((time.time() - start) * 1000, 2)
             if r.status_code == 200:
@@ -33,7 +33,7 @@ async def health(request: Request):
                     response = r.text
                 status["ollama"] = "ok"
                 status["ollama_latency_ms"] = latency
-                status["ollama_model"] = "gemma:2b"
+                status["ollama_model"] = "phi:2.7b"
                 status["ollama_response_preview"] = response[:100]
             else:
                 status["ollama"] = f"error {r.status_code}"

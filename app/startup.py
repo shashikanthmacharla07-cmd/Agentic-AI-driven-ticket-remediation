@@ -6,7 +6,7 @@ import httpx
 
 async def check_ollama_health():
     base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    model = os.getenv("LLM_MODEL", "gemma:2b")
+    model = os.getenv("LLM_MODEL", "phi:2.7b")
 
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:

@@ -2,6 +2,6 @@ FROM ollama/ollama:latest
 
 RUN ollama serve & \
     sleep 10 && \
-    ollama pull gemma:2b && \
+    ollama pull phi:2.7b && \
     wait
 
