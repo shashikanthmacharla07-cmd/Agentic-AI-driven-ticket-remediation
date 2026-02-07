@@ -32,7 +32,7 @@ def sample_raw_incident() -> Dict[str, Any]:
         "severity": "2",
         "state": "1",
         "cmdb_ci": {"value": "server-123", "display_value": "lin-server-01"},
-        "assignment_group": {"value": "04d7f8c4c38e3610cf197cec050131f5", "display_value": "Infra-team"},
+        "assignment_group": {"value": "3Dc610e30f83b232106b15f6b6feaad329", "display_value": "Agentic AI Ops"},
     }
 
 @pytest.fixture

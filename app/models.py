@@ -61,6 +61,7 @@ class PipelineContext(BaseModel):
 
 class IncidentRequest(BaseModel):
     incident_number: Optional[str] = None
+    short_description: Optional[str] = None  # Added for proper field mapping
     description: str
     severity: Optional[str] = None
     system: Optional[str] = None

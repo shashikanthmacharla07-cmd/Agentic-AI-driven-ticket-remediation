@@ -50,34 +50,50 @@ class IntakeAgent:
         return None
 
     async def run(self, ctx: PipelineContext, raw_incident: dict) -> PipelineContext:
-
-        # Always normalize and set incident number from ServiceNow
-        msg = await llm.ainvoke(prompt.format(raw=raw_incident))
-        print(f"LLM output: {repr(msg.content)}")
+        """
+        OPTIMIZED: Deterministic intake - extract fields directly from ServiceNow payload.
+        No LLM call needed since ServiceNow already provides structured data.
+        """
+        # Extract incident number (required)
+        incident_number = raw_incident.get("number") or raw_incident.get("incident_number")
+        if not incident_number:
+            raise HTTPException(status_code=400, detail="Incident number is required from ServiceNow payload.")
+        
+        # Extract fields directly from ServiceNow payload
+        short_description = raw_incident.get("short_description", "")
+        description = raw_incident.get("description", short_description)
+        
+        # Map ServiceNow severity to P1-P4
+        sn_severity = str(raw_incident.get("severity", "3"))
+        severity_map = {"1": "P1", "2": "P2", "3": "P3", "4": "P4"}
+        severity = severity_map.get(sn_severity, "P3")
+        
+        # Extract other fields
+        resource_id = raw_incident.get("cmdb_ci", {})
+        if isinstance(resource_id, dict):
+            resource_id = resource_id.get("value", "unknown")
+        resource_id = resource_id or "unknown"
+        
+        service = raw_incident.get("business_service", {})
+        if isinstance(service, dict):
+            service = service.get("value", "orchestrator")
+        service = service or "orchestrator"
+        
+        # Create incident object directly
         try:
-            parsed_dict = parser.parse(msg.content)
-            print(f"Parsed dict: {parsed_dict}")
-            # Fix severity to allowed values (P1-P4)
-            allowed_severities = {"p1", "p2", "p3", "p4"}
-            sev = parsed_dict.get("severity", "").strip().upper()
-            if sev.lower() not in allowed_severities:
-                # Map common severities to allowed values
-                mapping = {"critical": "P1", "high": "P2", "medium": "P3", "low": "P4"}
-                sev = mapping.get(sev.lower(), "P3")
-            parsed_dict["severity"] = sev
-            # Always use incident number from ServiceNow payload, and error if missing
-            incident_number = parsed_dict.get("number") or raw_incident.get("number")
-            if not incident_number:
-                raise HTTPException(status_code=400, detail="Incident number is required from ServiceNow payload.")
-            parsed_dict["number"] = incident_number
-            incident = Incident(**parsed_dict)
+            incident = Incident(
+                number=incident_number,
+                source="servicenow",
+                resource_id=resource_id,
+                service=service,
+                severity=severity,
+                short_description=short_description,
+                description=description
+            )
             print(f"Incident object: {incident}")
         except ValidationError as e:
             print(f"ValidationError: {e.errors()}")
             raise HTTPException(status_code=400, detail=f"Invalid incident intake: {e.errors()}")
-        except Exception as e:
-            print(f"Failed to parse or create incident: {e}")
-            raise HTTPException(status_code=400, detail=f"Failed to parse or create incident: {e}")
 
         # Detect OS from short_description
         detected_os = self._detect_os(incident.short_description)
@@ -85,15 +101,13 @@ class IntakeAgent:
             incident.context["os"] = detected_os
             print(f"Detected OS: {detected_os}")
 
-        # Only persist if incident was created
-        if 'incident' in locals():
-            if self.repo:
-                try:
-                    await self.repo.upsert(incident)
-                except Exception as e:
-                    print(f"Failed to upsert incident: {e}")
-            ctx.incident = incident
-            return ctx
-        else:
-            raise HTTPException(status_code=400, detail="Incident could not be created from LLM output.")
+        # Persist incident
+        if self.repo:
+            try:
+                await self.repo.upsert(incident)
+            except Exception as e:
+                print(f"Failed to upsert incident: {e}")
+        
+        ctx.incident = incident
+        return ctx
 

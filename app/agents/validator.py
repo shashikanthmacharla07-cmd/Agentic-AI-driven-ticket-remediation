@@ -35,6 +35,10 @@ class ValidatorAgent:
         self.repo = repo
 
     async def run(self, ctx: PipelineContext, telemetry: dict) -> PipelineContext:
+        """
+        OPTIMIZED: Deterministic validation - check execution status directly.
+        No LLM call needed since validation decision is based on job status.
+        """
         if not ctx.execution:
             raise HTTPException(status_code=400, detail="ValidatorAgent: execution missing")
 
@@ -42,34 +46,35 @@ class ValidatorAgent:
         if not number:
             raise HTTPException(status_code=400, detail="Incident number is required for validation DB insert.")
 
-        inputs = {
-            "incident": ctx.incident.dict(),
-            "execution": ctx.execution.dict(),
-            "telemetry": telemetry,
-        }
-
-        msg = await llm.ainvoke(prompt.format(**inputs))
-        print(f"Validator LLM output: {repr(msg.content)}")
-
-        try:
-            parsed_dict = parser.parse(msg.content)
-            print(f"Parsed validation dict: {parsed_dict}")
-            # Ensure it's a ValidationSignals object, not a dict
-            if isinstance(parsed_dict, dict):
-                validation = ValidationSignals(**parsed_dict)
-            else:
-                validation = parsed_dict
-            print(f"Validation object: {validation}")
-        except Exception as e:
-            print(f"ValidatorAgent: failed to parse LLM output: {e}")
-            raise HTTPException(status_code=500, detail=f"ValidatorAgent: invalid LLM output {e}")
+        # Determine validation decision based on execution status
+        exec_status = getattr(ctx.execution, 'status', 'unknown')
+        
+        # Simple deterministic logic for validation decision
+        if exec_status == "successful":
+            decision = "success"
+        elif exec_status in ["failed", "error", "canceled"]:
+            decision = "rollback"
+        elif exec_status in ["timeout", "unknown"]:
+            decision = "escalate"
+        else:
+            decision = "partial"
+        
+        print(f"Validator: Execution status '{exec_status}' -> decision '{decision}'")
+        
+        # Create validation object directly (no LLM call)
+        validation = ValidationSignals(
+            decision=decision,
+            metrics=telemetry.get("metrics", {}),
+            logs=telemetry.get("logs", {}),
+            synthetics=telemetry.get("synthetics", {})
+        )
+        print(f"Validation object: {validation}")
 
         if self.repo:
             try:
                 await self.repo.insert(number, validation)
             except Exception as e:
                 print(f"Failed to insert validation: {e}")
-        # Cache removed
 
         ctx.validation = validation
         return ctx

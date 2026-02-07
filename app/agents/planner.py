@@ -9,7 +9,6 @@ from langchain_core.output_parsers import JsonOutputParser
 from app.models import PipelineContext, Plan
 from app.data.repositories import PlanRepository
 from app.clients.awx_client import AWXClient
-from app.agents.PlaybookSelectionValidator import validate_playbook_selection
 
 
 
@@ -37,39 +36,113 @@ class PlannerAgent:
     def __init__(self, repo: PlanRepository, awx_client: AWXClient):
         self.repo = repo
         self.awx_client = awx_client
-        self.known_playbooks = {
-            # Removed hardcoded 'server_down' -> 'Demo Job Template' mapping to prevent auto-selection
-            # "server_down": {"id": "7", "name": "Demo Job Template", "description": "Demo playbook for server remediation"},
-            # Updated: use name for lookup, ID is placeholder to be resolved dynamically
-            "high_cpu": {"id": "dynamic", "name": "Linux_Kill_CPU_Utilization", "description": "Kill high CPU consuming processes on Linux"},
-            "windows_high_cpu": {"id": "dynamic", "name": "Windows_Kill_CPU_Utilization", "description": "Kill high CPU consuming processes on Windows"},
-            "high_memory": {"id": "7", "name": "Demo Job Template", "description": "Memory issues require further investigation or service restart"},
-            "disk_full": {"id": "10", "name": "Clean up var filesystem", "description": "Archive old logs and clean up disk space on /var"},
-            "storage_full": {"id": "10", "name": "Clean up var filesystem", "description": "Clean up /var filesystem"},
-            "storage_space_warning": {"id": "10", "name": "Clean up var filesystem", "description": "Clean up /var filesystem"},
-            "file_system_full": {"id": "10", "name": "Clean up var filesystem", "description": "Clean up /var filesystem"},
-            "filesystem_cleanup": {"id": "10", "name": "Clean up var filesystem", "description": "Cleanup /var filesystem and remove temporary files"},
-            "out_of_space": {"id": "10", "name": "Clean up var filesystem", "description": "Free up disk space on /var"},
-            "var_full": {"id": "10", "name": "Clean up var filesystem", "description": "Clean up /var partition"},
-            "tmp_full": {"id": "10", "name": "Clean up var filesystem", "description": "Clean up /tmp partition"},
-            "fs_full": {"id": "10", "name": "Clean up var filesystem", "description": "Clean up filesystem"},
-            "disk_usage_high": {"id": "10", "name": "Clean up var filesystem", "description": "Clean up disk space"},
-            "disk_space": {"id": "10", "name": "Clean up var filesystem", "description": "Clean up disk space"},
-            "filesystem_issue": {"id": "10", "name": "Clean up var filesystem", "description": "Clean up filesystem"},
-            "storage_issue": {"id": "10", "name": "Clean up var filesystem", "description": "Clean up filesystem due to storage issue"},
-            "critical_disk_space": {"id": "10", "name": "Clean up var filesystem", "description": "Clean up disk space"},
-            "database_down": {"id": "7", "name": "Demo Job Template", "description": "Restart database service"},
-            "network_error": {"id": "9", "name": "check_cpu_utilization", "description": "Check system metrics during network error"},
-            "application_crash": {"id": "7", "name": "Demo Job Template", "description": "Restart application"},
+        
+        # Keyword-based category mapping for dynamic playbook discovery
+        # Instead of hardcoding playbook names/IDs, we define keywords that match
+        # against AWX playbook names and descriptions dynamically
+        self.category_keywords = {
+            "high_cpu": {
+                "keywords": ["cpu", "utilization", "process", "top", "kill"],
+                "priority": 10,
+                "description": "High CPU utilization remediation"
+            },
+            "high_memory": {
+                "keywords": ["memory", "ram", "oom", "heap", "leak"],
+                "priority": 10,
+                "description": "Memory issues remediation"
+            },
+            "disk_full": {
+                "keywords": ["disk", "filesystem", "var", "cleanup", "space", "storage", "log"],
+                "priority": 10,
+                "description": "Disk space cleanup"
+            },
+            "service_down": {
+                "keywords": ["restart", "service", "start", "stop", "systemctl"],
+                "priority": 8,
+                "description": "Service restart"
+            },
+            "database_down": {
+                "keywords": ["database", "db", "postgres", "mysql", "mongo", "redis"],
+                "priority": 8,
+                "description": "Database remediation"
+            },
+            "application_crash": {
+                "keywords": ["app", "application", "restart", "deploy"],
+                "priority": 7,
+                "description": "Application restart"
+            },
+            "network_error": {
+                "keywords": ["network", "connectivity", "firewall", "port"],
+                "priority": 6,
+                "description": "Network troubleshooting"
+            },
         }
+        
+        # Cache for resolved playbooks (category -> playbook mapping)
+        self._playbook_cache = {}
+        self._cache_timestamp = None
+        self._cache_ttl = 300  # 5 minutes
 
-    def _get_playbook_for_classification(self, category: str) -> dict:
-        """Map incident category to appropriate AWX playbook ID."""
-        # storage related labels
+
+    def _match_playbook_to_category(self, playbooks: List[dict], category: str) -> Optional[dict]:
+        """
+        Dynamically match a playbook from AWX to an incident category using keywords.
+        Returns the best matching playbook or None.
+        """
+        if category not in self.category_keywords:
+            return None
+        
+        category_info = self.category_keywords[category]
+        keywords = category_info["keywords"]
+        
+        best_match = None
+        best_score = 0
+        
+        for pb in playbooks:
+            pb_text = (pb.get("name", "") + " " + (pb.get("description") or "")).lower()
+            
+            # Count keyword matches
+            score = sum(1 for kw in keywords if kw in pb_text)
+            
+            # Bonus for exact category name match
+            if category.replace("_", "-") in pb_text or category.replace("_", " ") in pb_text:
+                score += 3
+            
+            if score > best_score:
+                best_score = score
+                best_match = pb
+        
+        return best_match if best_score > 0 else None
+
+    def _get_playbook_for_classification(self, category: str, playbooks: List[dict]) -> Optional[dict]:
+        """
+        Dynamically map incident category to appropriate AWX playbook.
+        Uses keyword matching against actual AWX playbooks.
+        """
+        # Try direct category match first
+        match = self._match_playbook_to_category(playbooks, category)
+        if match:
+            return match
+        
+        # Try related categories for storage/disk issues
         if any(keyword in category.lower() for keyword in ["disk", "storage", "filesystem", "space"]):
-            return self.known_playbooks.get("disk_full")
-
-        return self.known_playbooks.get(category)
+            match = self._match_playbook_to_category(playbooks, "disk_full")
+            if match:
+                return match
+        
+        # Try CPU-related categories
+        if any(keyword in category.lower() for keyword in ["cpu", "utilization", "load"]):
+            match = self._match_playbook_to_category(playbooks, "high_cpu")
+            if match:
+                return match
+        
+        # Try memory-related categories
+        if any(keyword in category.lower() for keyword in ["memory", "ram", "oom"]):
+            match = self._match_playbook_to_category(playbooks, "high_memory")
+            if match:
+                return match
+        
+        return None
 
     def _filter_playbooks(self, ctx: PipelineContext, playbooks: List[dict]) -> List[dict]:
         """
@@ -82,21 +155,32 @@ class PlannerAgent:
         if not playbooks:
             return []
 
-        # OS Filtering
-        detected_os = ctx.incident.context.get("os")
+        # OS Filtering based on hostname detection from classifier
+        detected_os = None
+        if ctx.incident and ctx.incident.context:
+            detected_os = ctx.incident.context.get("os")
+            hostname = ctx.incident.context.get("hostname")
+            if detected_os:
+                print(f"Planner: Filtering playbooks for OS '{detected_os}' (hostname: {hostname})")
+        
         if detected_os:
-            print(f"Applying OS filter for: {detected_os}")
+            original_count = len(playbooks)
             filtered_by_os = []
+            excluded = []
             for pb in playbooks:
-                pb_text = (pb.get("name", "") + " " + pb.get("description", "")).lower()
+                pb_text = (pb.get("name", "") + " " + (pb.get("description") or "")).lower()
                 # If OS is linux, skip windows playbooks
                 if detected_os == "linux" and "windows" in pb_text:
+                    excluded.append(pb.get("name"))
                     continue
                 # If OS is windows, skip linux playbooks
                 if detected_os == "windows" and "linux" in pb_text:
+                    excluded.append(pb.get("name"))
                     continue
                 filtered_by_os.append(pb)
             playbooks = filtered_by_os
+            if excluded:
+                print(f"Planner: Excluded {len(excluded)} playbooks due to OS mismatch: {excluded}")
 
         # Keywords from incident
         text = (ctx.incident.short_description + " " + ctx.incident.description).lower()
@@ -141,15 +225,8 @@ class PlannerAgent:
         
         formatted_playbooks = []
         for pb in filtered_playbooks:
-            desc = pb.get("description", "")
-            
-            # Enrich description: PREFER known playbook description if available
-            # This ensures high quality descriptions ("Kill high CPU...") override poor AWX descriptions ("processes which consumes CPU")
-            for known in self.known_playbooks.values():
-                if known.get("name") == pb.get("name"):
-                    desc = known.get("description")
-                    break
-            
+            desc = pb.get("description") or ""
+            # Use AWX description directly - no need for hardcoded overrides
             formatted_playbooks.append(f"ID: {pb['id']}, Name: {pb['name']}, Description: {desc or 'N/A'}")
         print(f"Playbooks sent to LLM ({len(formatted_playbooks)}/{len(playbooks)}): {formatted_playbooks}")
 
@@ -188,11 +265,40 @@ class PlannerAgent:
 
             print(f"Post-parsing plan data: {plan_data}")
 
-            # Validate/Override with PlaybookSelectionValidator
-            # Validate/Override with PlaybookSelectionValidator
+            # Validate/Override with dynamic playbook matching
             if ctx.classification and ctx.classification.labels:
-                 detected_os = ctx.incident.context.get("os")
-                 plan_data = validate_playbook_selection(plan_data, ctx.classification.labels, self.known_playbooks, os_type=detected_os)
+                detected_os = ctx.incident.context.get("os") if ctx.incident.context else None
+                
+                # Prioritize labels based on incident description matching
+                # This ensures CPU incidents get CPU playbooks even if memory label is also present
+                incident_text = f"{ctx.incident.short_description or ''} {ctx.incident.description or ''}".lower()
+                
+                label_scores = []
+                for label in ctx.classification.labels:
+                    score = 0
+                    label_keywords = label.replace("_", " ").split()
+                    for kw in label_keywords:
+                        if kw in incident_text:
+                            score += 1
+                    # Boost score for exact keyword presence
+                    if label == "high_cpu" and "cpu" in incident_text:
+                        score += 5
+                    if label == "high_memory" and "memory" in incident_text:
+                        score += 5
+                    label_scores.append((label, score))
+                
+                # Sort by score descending - highest relevance first
+                label_scores.sort(key=lambda x: x[1], reverse=True)
+                print(f"Label priority scores: {label_scores}")
+                
+                # Use dynamic matching with prioritized labels
+                for label, score in label_scores:
+                    matched_pb = self._get_playbook_for_classification(label, playbooks)
+                    if matched_pb:
+                        plan_data["playbook_id"] = str(matched_pb["id"])
+                        plan_data["playbook_name"] = matched_pb["name"]
+                        print(f"Dynamic match found: {label} (score: {score}) -> {matched_pb['name']} (ID: {matched_pb['id']})")
+                        break
 
             # Ensure prechecks and rollback_steps are lists
             if not plan_data.get("prechecks"):

@@ -39,6 +39,10 @@ class ClosureAgent:
         self.sn_client = sn_client
 
     async def run(self, ctx: PipelineContext) -> PipelineContext:
+        """
+        OPTIMIZED: Deterministic closure - generate work notes from templates.
+        No LLM call needed since closure notes follow predictable patterns.
+        """
         if not ctx.validation:
             raise HTTPException(status_code=400, detail="ClosureAgent: validation missing")
 
@@ -46,58 +50,37 @@ class ClosureAgent:
         if not number:
             raise HTTPException(status_code=400, detail="Incident number is required for closure DB insert.")
 
-        inputs = {
-            "incident": ctx.incident.dict(),
-            "classification": ctx.classification.dict(),
-            "plan": ctx.plan.dict(),
-            "execution": ctx.execution.dict(),
-            "validation": ctx.validation.dict(),
-        }
-
-        msg = await llm.ainvoke(prompt.format(**inputs))
-        print(f"Closure LLM output: {repr(msg.content)}")
-
-        try:
-            try:
-                parsed_dict = parser.parse(msg.content)
-            except Exception:
-                parsed_dict = json.loads(msg.content)
-
-            print(f"[ClosureAgent] Parsed closure dict: {parsed_dict}")
-
-            if isinstance(parsed_dict, dict):
-                parsed_dict.setdefault("closed_by", "orchestrator")
-                parsed_dict.setdefault("incident_id", ctx.incident.number)
-
-                exec_status = getattr(ctx.execution, 'status', 'unknown')
-                val_decision = getattr(ctx.validation, 'decision', 'unknown')
-
-                # Resolution fallback
-                if parsed_dict.get("resolution") not in ["resolved", "duplicate", "false-positive", "escalated"]:
-                    parsed_dict["resolution"] = "resolved" if exec_status == "successful" else "escalated"
-
-                # Override hallucinated failure notes if execution was successful
-                if exec_status == "successful" and val_decision == "success":
-                    print("[ClosureAgent] Overriding LLM notes to reflect successful remediation.")
-                    parsed_dict["resolution"] = "resolved"
-                    parsed_dict["resolution_summary"] = "Automated remediation successful"
-                    parsed_dict["work_notes"] = f"Executed playbook {ctx.plan.playbook_name} successfully. Validation confirmed resolution."
-
-                # Ensure non-empty fields
-                if not parsed_dict.get("work_notes") or not str(parsed_dict["work_notes"]).strip():
-                    parsed_dict["work_notes"] = "Closed by orchestrator."
-                if not parsed_dict.get("resolution_summary") or not str(parsed_dict["resolution_summary"]).strip():
-                    parsed_dict["resolution_summary"] = "Incident processed by orchestration agent."
-
-                closure = Closure(**parsed_dict)
-            else:
-                closure = parsed_dict
-
-            print(f"[ClosureAgent] Closure object created: {closure}")
-
-        except Exception as e:
-            print(f"[ClosureAgent] Fatal parse error: {e}")
-            raise HTTPException(status_code=500, detail=f"ClosureAgent: invalid LLM output {e}")
+        # Get status values
+        exec_status = getattr(ctx.execution, 'status', 'unknown') if ctx.execution else 'unknown'
+        val_decision = getattr(ctx.validation, 'decision', 'unknown')
+        playbook_name = ctx.plan.playbook_name if ctx.plan else 'unknown'
+        job_id = ctx.execution.job_id if ctx.execution else 'N/A'
+        
+        # Generate closure notes deterministically based on status
+        if exec_status == "successful" and val_decision == "success":
+            resolution = "resolved"
+            resolution_summary = "Automated remediation successful"
+            work_notes = f"Agentic AI: Executed playbook '{playbook_name}' (Job ID: {job_id}) successfully. Validation confirmed resolution."
+        elif exec_status == "successful" and val_decision in ["partial", "rollback"]:
+            resolution = "escalated"
+            resolution_summary = "Automated remediation partially successful - requires review"
+            work_notes = f"Agentic AI: Executed playbook '{playbook_name}' (Job ID: {job_id}). Validation status: {val_decision}. Manual review recommended."
+        else:
+            resolution = "escalated"
+            resolution_summary = "Automated remediation failed"
+            work_notes = f"Agentic AI: Attempted playbook '{playbook_name}' (Job ID: {job_id}). Execution status: {exec_status}. Validation: {val_decision}. Escalating to manual review."
+        
+        print(f"[ClosureAgent] Generated closure: resolution={resolution}, exec={exec_status}, val={val_decision}")
+        
+        # Create closure object directly (no LLM call)
+        closure = Closure(
+            incident_id=number,
+            closed_by="orchestrator",
+            resolution=resolution,
+            work_notes=work_notes,
+            resolution_summary=resolution_summary
+        )
+        print(f"[ClosureAgent] Closure object created: {closure}")
 
         if not getattr(closure, "work_notes", None) or not str(closure.work_notes).strip():
             closure.work_notes = "Closed by orchestrator."

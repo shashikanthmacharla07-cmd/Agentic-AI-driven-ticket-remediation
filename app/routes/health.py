@@ -15,26 +15,16 @@ def get_ollama_host() -> str:
 async def health(request: Request):
     status = {"orchestrator": "ok"}
 
-    # Ollama check
+    # Ollama check - use fast /api/tags endpoint instead of slow inference
     ollama_host = get_ollama_host()
-    sample_prompt = "hi"
     start = time.time()
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            r = await client.post(
-                f"{ollama_host}/api/generate",
-                json={"model": "phi:2.7b", "prompt": sample_prompt, "stream": False}
-            )
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.get(f"{ollama_host}/api/tags")
             latency = round((time.time() - start) * 1000, 2)
             if r.status_code == 200:
-                try:
-                    response = r.json().get("response", "")
-                except Exception:
-                    response = r.text
                 status["ollama"] = "ok"
                 status["ollama_latency_ms"] = latency
-                status["ollama_model"] = "phi:2.7b"
-                status["ollama_response_preview"] = response[:100]
             else:
                 status["ollama"] = f"error {r.status_code}"
     except Exception as e:

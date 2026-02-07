@@ -59,8 +59,9 @@ class ClassifierAgent:
             if "cleanup" in text_lower:
                 labels.append("filesystem_cleanup")
         
-        # CPU checks
-        if any(k in text_lower for k in ["cpu", "utilization", "processor"]):
+        # CPU checks - be specific about CPU-related terms
+        cpu_keywords = ["cpu", "processor", "cpu utilization", "cpu usage", "high cpu"]
+        if any(k in text_lower for k in cpu_keywords):
             labels.append("high_cpu")
             
         # VM Availability checks
@@ -68,11 +69,80 @@ class ClassifierAgent:
             labels.append("vm_availability")
             labels.append("high_cpu") # Requirement: invoke CPU playbook for VM availability
             
-        # Memory checks
-        if any(k in text_lower for k in ["memory", "ram", "memory_usage"]):
+        # Memory checks - only add if memory is explicitly mentioned
+        # Don't add high_memory just because of generic "utilization" keyword
+        memory_keywords = ["memory", "ram", "memory usage", "memory utilization", "high memory", "oom", "out of memory"]
+        if any(k in text_lower for k in memory_keywords):
             labels.append("high_memory")
             
         return list(set(labels))
+
+    def _extract_hostname_and_os(self, ctx: PipelineContext) -> tuple[Optional[str], Optional[str]]:
+        """
+        Extract hostname from incident description and detect OS based on naming convention.
+        - Hostname containing 'lin' -> linux
+        - Hostname containing 'win' -> windows
+        Returns (hostname, os_type) tuple.
+        """
+        import re
+        
+        if not ctx.incident:
+            return None, None
+        
+        # Combine all text sources for hostname extraction
+        desc = ctx.incident.description or ""
+        short_desc = ctx.incident.short_description or ""
+        resource_id = ctx.incident.resource_id or ""
+        combined_text = f"{desc} {short_desc} {resource_id}".lower()
+        
+        hostname = None
+        
+        # Patterns to extract hostname from description
+        # Priority order: more specific patterns first
+        patterns = [
+            r'hostname[:\s]+([a-zA-Z0-9\-_]+)',           # hostname: xyz or hostname xyz
+            r'server[:\s]+([a-zA-Z0-9\-_]+)',             # server: xyz or server xyz
+            r'host[:\s]+([a-zA-Z0-9\-_]+)',               # host: xyz or host xyz
+            r'on\s+server\s+([a-zA-Z0-9\-_]+)',           # on server xyz
+            r'on\s+host\s+([a-zA-Z0-9\-_]+)',             # on host xyz
+            r'on\s+([a-zA-Z0-9]*(?:lin|win)[a-zA-Z0-9\-_]*)', # on linprod01 or winprod01
+            r'\b([a-zA-Z0-9]*lin[a-zA-Z0-9\-_]*)\b',      # any word containing 'lin'
+            r'\b([a-zA-Z0-9]*win[a-zA-Z0-9\-_]*)\b',      # any word containing 'win'
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, combined_text)
+            if match:
+                hostname = match.group(1)
+                # Skip common words that aren't hostnames
+                if hostname in ['the', 'a', 'an', 'is', 'on', 'in', 'at', 'to', 'for', 'and', 'window', 'windows', 'linux', 'line', 'online', 'offline']:
+                    continue
+                break
+        
+        if not hostname:
+            return None, None
+        
+        # Detect OS from hostname pattern
+        hostname_lower = hostname.lower()
+        os_type = None
+        
+        if 'lin' in hostname_lower:
+            os_type = 'linux'
+        elif 'win' in hostname_lower:
+            os_type = 'windows'
+        
+        # Additional Linux distro patterns in hostname
+        if not os_type:
+            linux_patterns = ['ubuntu', 'centos', 'rhel', 'debian', 'fedora', 'suse']
+            if any(p in hostname_lower for p in linux_patterns):
+                os_type = 'linux'
+        
+        if hostname and os_type:
+            print(f"Extracted hostname: '{hostname}', detected OS: '{os_type}'")
+        elif hostname:
+            print(f"Extracted hostname: '{hostname}', OS could not be determined")
+        
+        return hostname, os_type
 
     async def run(self, ctx: PipelineContext, playbooks: List[dict] = None) -> PipelineContext:
         if not ctx.incident:
@@ -80,6 +150,18 @@ class ClassifierAgent:
 
         number = ctx.incident.number or "unknown"
         playbooks = playbooks or []
+
+        # Extract hostname and detect OS from incident description
+        hostname, detected_os = self._extract_hostname_and_os(ctx)
+        if hostname or detected_os:
+            # Store in incident context for planner to use
+            if ctx.incident.context is None:
+                ctx.incident.context = {}
+            if hostname:
+                ctx.incident.context["hostname"] = hostname
+            if detected_os:
+                ctx.incident.context["os"] = detected_os
+                print(f"Classifier: Set OS context to '{detected_os}' for planner filtering")
 
         # Prepare prompt inputs with playbook context
         inputs = {

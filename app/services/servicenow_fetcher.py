@@ -14,12 +14,12 @@ class ServiceNowIncidentFetcher:
     
     async def fetch_open_incidents(self, limit: int = 10) -> List[IncidentRequest]:
         """
-        Fetch incidents from ServiceNow and strictly verify both state 'New' (state=1) and assignment group 'Infra-team'.
+        Fetch incidents from ServiceNow and strictly verify both state 'New' (state=1) and assignment group 'Agentic AI Ops'.
         Limit to prevent overwhelming the system (default 10 incidents per poll)
         """
         try:
             # Query for incidents that are likely to match, but always verify both state and assignment group in post-filter
-            query = "state=1^assignment_group.name=Infra-team"
+            query = "state=1^assignment_group.name=Agentic AI Ops"
             incidents = await self.snow_client.query_incidents(query, limit=limit)
 
             # DEBUG: Print raw incidents for troubleshooting
@@ -27,7 +27,7 @@ class ServiceNowIncidentFetcher:
 
             # Post-filter incidents by state and assignment group
 
-            # POST-FETCH FILTER: Only keep incidents with assignment_group display value 'Infra-team' AND state '1' (New)
+            # POST-FETCH FILTER: Only keep incidents with assignment_group display value 'Agentic AI Ops' AND state '1' (New)
             filtered_incidents = []
             for incident in incidents:
                 if not isinstance(incident, dict):
@@ -41,23 +41,23 @@ class ServiceNowIncidentFetcher:
                 elif isinstance(agroup, str):
                     agroup_id = agroup
                 
-                matched_group = (agroup_id == "04d7f8c4c38e3610cf197cec050131f5")
+                matched_group = (agroup_id == "3Dc610e30f83b232106b15f6b6feaad329")
                 print(f"DEBUG: Incident {incident.get('number')} group_id: {agroup_id}, group_name: {agroup_name}, matched: {matched_group}")
                 
                 # Check both 'state' and 'incident_state' fields
                 state_val = str(incident.get('state', '')).strip()
                 incident_state_val = str(incident.get('incident_state', '')).strip()
                 
-                # Match by assignment_group sys_id for Infra-team and state '1' (New)
+                # Match by assignment_group sys_id for Agentic AI Ops and state '1' (New)
                 # Note: We temporarily allow ANY group if it matches the name filter in the query to see what we get
                 if (state_val == '1' or incident_state_val == '1'):
                     filtered_incidents.append(incident)
 
             if not filtered_incidents:
-                print("No incidents with state 'New' and assignment group 'Infra-team' found in ServiceNow (post-filter)")
+                print("No incidents with state 'New' and assignment group 'Agentic AI Ops' found in ServiceNow (post-filter)")
                 return []
 
-            print(f"Found {len(filtered_incidents)} incidents with state 'New' and assignment group 'Infra-team' in ServiceNow (limit: {limit}, post-filter)")
+            print(f"Found {len(filtered_incidents)} incidents with state 'New' and assignment group 'Agentic AI Ops' in ServiceNow (limit: {limit}, post-filter)")
 
             # Convert to IncidentRequest format
             incident_requests = []
@@ -90,7 +90,8 @@ class ServiceNowIncidentFetcher:
                 # Create IncidentRequest
                 incident_req = IncidentRequest(
                     incident_number=number,
-                    description=f"{short_desc}\n{description}".strip(),
+                    short_description=short_desc,  # Pass short_description separately
+                    description=description or short_desc,  # Use description if available, else short_desc
                     system=system or 'orchestrator',
                     severity=mapped_severity
                 )
