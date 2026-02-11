@@ -84,7 +84,7 @@ class PlannerAgent:
         self._cache_ttl = 300  # 5 minutes
 
 
-    def _match_playbook_to_category(self, playbooks: List[dict], category: str) -> Optional[dict]:
+    def _match_playbook_to_category(self, playbooks: List[dict], category: str, detected_os: str = None) -> Optional[dict]:
         """
         Dynamically match a playbook from AWX to an incident category using keywords.
         Returns the best matching playbook or None.
@@ -101,6 +101,13 @@ class PlannerAgent:
         for pb in playbooks:
             pb_text = (pb.get("name", "") + " " + (pb.get("description") or "")).lower()
             
+            # OS Check
+            if detected_os:
+                if detected_os == "linux" and "windows" in pb_text:
+                    continue
+                if detected_os == "windows" and "linux" in pb_text:
+                    continue
+
             # Count keyword matches
             score = sum(1 for kw in keywords if kw in pb_text)
             
@@ -114,31 +121,32 @@ class PlannerAgent:
         
         return best_match if best_score > 0 else None
 
-    def _get_playbook_for_classification(self, category: str, playbooks: List[dict]) -> Optional[dict]:
+    def _get_playbook_for_classification(self, category: str, playbooks: List[dict], detected_os: str = None) -> Optional[dict]:
         """
         Dynamically map incident category to appropriate AWX playbook.
         Uses keyword matching against actual AWX playbooks.
+        Respects OS constraints if detected_os is provided.
         """
         # Try direct category match first
-        match = self._match_playbook_to_category(playbooks, category)
+        match = self._match_playbook_to_category(playbooks, category, detected_os=detected_os)
         if match:
             return match
         
         # Try related categories for storage/disk issues
         if any(keyword in category.lower() for keyword in ["disk", "storage", "filesystem", "space"]):
-            match = self._match_playbook_to_category(playbooks, "disk_full")
+            match = self._match_playbook_to_category(playbooks, "disk_full", detected_os=detected_os)
             if match:
                 return match
         
         # Try CPU-related categories
         if any(keyword in category.lower() for keyword in ["cpu", "utilization", "load"]):
-            match = self._match_playbook_to_category(playbooks, "high_cpu")
+            match = self._match_playbook_to_category(playbooks, "high_cpu", detected_os=detected_os)
             if match:
                 return match
         
         # Try memory-related categories
         if any(keyword in category.lower() for keyword in ["memory", "ram", "oom"]):
-            match = self._match_playbook_to_category(playbooks, "high_memory")
+            match = self._match_playbook_to_category(playbooks, "high_memory", detected_os=detected_os)
             if match:
                 return match
         
@@ -293,7 +301,7 @@ class PlannerAgent:
                 
                 # Use dynamic matching with prioritized labels
                 for label, score in label_scores:
-                    matched_pb = self._get_playbook_for_classification(label, playbooks)
+                    matched_pb = self._get_playbook_for_classification(label, playbooks, detected_os=detected_os)
                     if matched_pb:
                         plan_data["playbook_id"] = str(matched_pb["id"])
                         plan_data["playbook_name"] = matched_pb["name"]

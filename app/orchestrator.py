@@ -79,6 +79,17 @@ class OrchestrationAgent:
             print("Starting planner")
             ctx = await self.planner.run(ctx, playbooks=playbooks)
             print("Planner done")
+            
+            # Check if planner decided to escalate (playbook_id='0')
+            if ctx.plan.playbook_id == "0":
+                print("Planner returned playbook_id='0' (No suitable playbook). Escalating to human.")
+                if run_id and self.pipeline_repo:
+                    await self.pipeline_repo.complete(run_id, "awaiting_approval", "No suitable playbook found")
+                return OrchestratorResponse(
+                    status="awaiting_approval",
+                    incident=ctx.incident.number,
+                    job_id=None
+                )
 
             # --- EXECUTOR ---
             if run_id and self.pipeline_repo:
@@ -108,7 +119,10 @@ class OrchestrationAgent:
             # --- COMPLETE ---
             final_status = ctx.validation.decision
             if run_id and self.pipeline_repo:
-                await self.pipeline_repo.complete(run_id, "success")
+                # Map validation decision to pipeline status
+                # 'success' -> 'success', 'rollback' -> 'error' (if rollback happened), 'failure' -> 'error'
+                db_status = "success" if final_status == "success" else "error"
+                await self.pipeline_repo.complete(run_id, db_status, f"Completed with status: {final_status}")
 
             return OrchestratorResponse(
                 status=final_status,

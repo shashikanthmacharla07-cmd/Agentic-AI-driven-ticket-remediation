@@ -1,4 +1,3 @@
-
 services:
   orchestrator:
     build: .
@@ -17,6 +16,51 @@ services:
       # redis removed
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
+  mcp-itsm:
+    build: .
+    container_name: mcp-itsm
+    env_file:
+      - .env
+    environment:
+      - SNOW_URL
+      - SNOW_USER
+      - SNOW_PASS
+    restart: unless-stopped
+    command: uvicorn mcp_servers.itsm_server:mcp.sse_app --host 0.0.0.0 --port 3001
+    ports:
+      - "3001:3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "-I", "http://localhost:3001/sse" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  mcp-automation:
+    build: .
+    container_name: mcp-automation
+    env_file:
+      - .env
+    environment:
+      - AWX_URL
+      - AWX_TOKEN
+    restart: unless-stopped
+    command: uvicorn mcp_servers.automation_server:mcp.sse_app --host 0.0.0.0 --port 3002
+    ports:
+      - "3002:3002"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "-I", "http://localhost:3002/sse" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
     # healthcheck:
     #   test: ["CMD-SHELL", "curl -f http://host.docker.internal:11434/api/tags || exit 1"]
     #   interval: 20s
@@ -39,14 +83,12 @@ services:
       - ./migrations:/docker-entrypoint-initdb.d
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}" ]
       interval: 10s
       timeout: 5s
       retries: 5
 
-
-
 volumes:
   postgres_data:
-  # redis_data removed
+    # redis_data removed
 

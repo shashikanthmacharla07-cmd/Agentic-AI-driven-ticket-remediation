@@ -7,6 +7,7 @@ langchain-community
 langchain-ollama
 python-dateutil
 pydantic[dotenv]
+mcp[cli]
 
 # Missing core dependencies
 asyncpg
@@ -27,4 +28,3 @@ jinja2
 # If you use pandas or numpy for data processing
 #pandas
 #numpy
-

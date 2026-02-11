@@ -145,9 +145,11 @@ class ServiceNowClient:
     # ----------------------------
     async def ping(self) -> bool:
         """
-        Basic health check: attempts to access API root.
+        Basic health check: checks connectivity by querying for 1 incident.
         """
-        async with self._client() as client:
-            resp = await client.get("api/now/")
-            return resp.status_code == 200
+        try:
+            await self.query_incidents(limit=1)
+            return True
+        except Exception:
+            return False
 
