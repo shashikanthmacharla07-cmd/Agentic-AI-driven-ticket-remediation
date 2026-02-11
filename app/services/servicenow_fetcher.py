@@ -1,16 +1,16 @@
 # app/services/servicenow_fetcher.py
 import asyncio
 import json
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from app.clients.servicenow_client import ServiceNowClient
 from app.models import IncidentRequest
 
 class ServiceNowIncidentFetcher:
     """Fetches open incidents from ServiceNow and converts them to IncidentRequest format"""
     
-    def __init__(self, snow_client: ServiceNowClient):
+    def __init__(self, snow_client: ServiceNowClient, pipeline_repo=None):
         self.snow_client = snow_client
-        self.processed_incidents = set()  # Track processed incident IDs
+        self.pipeline_repo = pipeline_repo
     
     async def fetch_open_incidents(self, limit: int = 10) -> List[IncidentRequest]:
         """
@@ -49,7 +49,6 @@ class ServiceNowIncidentFetcher:
                 incident_state_val = str(incident.get('incident_state', '')).strip()
                 
                 # Match by assignment_group sys_id for Agentic AI Ops and state '1' (New)
-                # Note: We temporarily allow ANY group if it matches the name filter in the query to see what we get
                 if (state_val == '1' or incident_state_val == '1'):
                     filtered_incidents.append(incident)
 
@@ -69,12 +68,22 @@ class ServiceNowIncidentFetcher:
                 if not isinstance(incident, dict):
                     print(f"Skipping incident - invalid format (not dict): {type(incident)}")
                     continue
-                sys_id = incident.get('sys_id')
-                # Skip if already processed
-                if sys_id in self.processed_incidents:
-                    continue
-                # Extract relevant fields
+                
                 number = incident.get('number')
+                
+                # Check DB-backed tracking: skip if already successfully processed or actively running
+                if self.pipeline_repo and number:
+                    try:
+                        if await self.pipeline_repo.is_recently_processed(number):
+                            print(f"Skipping incident {number} - already successfully processed (DB check)")
+                            continue
+                        if await self.pipeline_repo.has_active_run(number):
+                            print(f"Skipping incident {number} - pipeline currently active (DB check)")
+                            continue
+                    except Exception as e:
+                        print(f"Warning: DB check failed for {number}, proceeding anyway: {e}")
+                
+                # Extract relevant fields
                 short_desc = incident.get('short_description', '')
                 description = incident.get('description', '')
                 # Handle cmdb_ci which might be a dict or string
@@ -96,7 +105,6 @@ class ServiceNowIncidentFetcher:
                     severity=mapped_severity
                 )
                 incident_requests.append(incident_req)
-                self.processed_incidents.add(sys_id)
                 print(f"Queued incident {number} from ServiceNow: {short_desc}")
 
             return incident_requests
@@ -115,7 +123,3 @@ class ServiceNowIncidentFetcher:
         except Exception as e:
             print(f"Error getting sys_id for {incident_number}: {e}")
         return None
-    
-    def mark_as_processed(self, sys_id: str):
-        """Mark an incident as processed to avoid reprocessing"""
-        self.processed_incidents.add(sys_id)

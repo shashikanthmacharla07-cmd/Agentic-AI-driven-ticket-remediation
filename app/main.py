@@ -26,6 +26,7 @@ from app.data.repositories import (
     ExecutionRepository,
     ValidationRepository,
     ClosureRepository,
+    PipelineRunRepository,
 )
 
 # Clients
@@ -49,6 +50,7 @@ from app.services.incident_scheduler import IncidentScheduler
 
 # Health route
 from app.routes import health
+from app.routes import dashboard
 
 def get_ollama_host() -> str:
     return os.getenv("OLLAMA_BASE_URL", "http://172.16.0.4:11434")
@@ -87,8 +89,10 @@ async def lifespan(app: FastAPI):
         app.state.execution_repo = ExecutionRepository(app.state.pg_pool)
         app.state.validation_repo = ValidationRepository(app.state.pg_pool)
         app.state.closure_repo = ClosureRepository(app.state.pg_pool)
+        app.state.pipeline_repo = PipelineRunRepository(app.state.pg_pool)
     else:
         app.state.incident_repo = None
+        app.state.pipeline_repo = None
         # etc, set to None
 
     app.state.awx = AWXClient(base_url=awx_url, token=awx_token) if awx_url and awx_token else None
@@ -108,11 +112,12 @@ async def lifespan(app: FastAPI):
         planner=app.state.planner,
         executor=app.state.executor,
         validator=app.state.validator,
-        closure=app.state.closure
+        closure=app.state.closure,
+        pipeline_repo=app.state.pipeline_repo
     )
 
     # Initialize ServiceNow incident fetcher and scheduler
-    app.state.sn_fetcher = ServiceNowIncidentFetcher(app.state.snow) if app.state.snow else None
+    app.state.sn_fetcher = ServiceNowIncidentFetcher(app.state.snow, pipeline_repo=app.state.pipeline_repo) if app.state.snow else None
     app.state.scheduler = None
     if app.state.sn_fetcher:
         poll_interval = int(os.getenv("INCIDENT_POLL_INTERVAL_SECONDS", "30"))
@@ -144,6 +149,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 app.include_router(health.router)
+app.include_router(dashboard.router)
 
 
 @app.get("/")

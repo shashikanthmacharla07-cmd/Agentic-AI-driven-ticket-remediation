@@ -230,6 +230,16 @@ class ClassifierAgent:
                 # Boost confidence if heuristics match
                 classification.confidence = min(1.0, classification.confidence + 0.2)
 
+                # Override eligibility to 'auto' if heuristic labels match known
+                # auto-remediable categories (we have playbooks for these)
+                auto_remediable = {"high_cpu", "disk_full", "var_full", "tmp_full",
+                                   "filesystem_cleanup", "high_memory", "vm_availability"}
+                if auto_remediable.intersection(set(heuristic_labels)):
+                    if classification.eligibility == "human-only":
+                        print(f"Heuristic override: eligibility changed from 'human-only' → 'auto' "
+                              f"(matched: {auto_remediable.intersection(set(heuristic_labels))})")
+                        classification.eligibility = "auto"
+
         except Exception as e:
             print(f"ClassifierAgent: failed to parse LLM output: {e}")
             raise HTTPException(status_code=500, detail=f"ClassifierAgent: invalid LLM output {e}")
