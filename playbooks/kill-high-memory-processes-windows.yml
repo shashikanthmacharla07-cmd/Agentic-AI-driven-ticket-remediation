@@ -1,0 +1,38 @@
+---
+# Playbook to kill high memory processes on Windows
+- name: Kill High Memory Processes
+  hosts: all
+  gather_facts: no
+  vars:
+    process_limit: 5
+    excluded_processes:
+      - "System"
+      - "svchost"
+      - "csrss"
+      - "wininit"
+      - "services"
+      - "lsass"
+      - "winlogon"
+      - "explorer"
+  tasks:
+    - name: Get and kill high memory processes
+      ansible.windows.win_powershell:
+        script: |
+          $limit = {{ process_limit }}
+          $excluded = @(
+            {% for process in excluded_processes %}
+            "{{ process }}",
+            {% endfor %}
+          )
+          
+          $processes = Get-Process | Where-Object { $excluded -notcontains $_.ProcessName } | Sort-Object -Property WorkingSet -Descending | Select-Object -First $limit
+          
+          foreach ($proc in $processes) {
+            Write-Output "Killing process: $($proc.ProcessName) (ID: $($proc.Id), Memory: $($proc.WorkingSet / 1MB) MB)"
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+          }
+      register: kill_result
+
+    - name: Display kill results
+      debug:
+        var: kill_result.output

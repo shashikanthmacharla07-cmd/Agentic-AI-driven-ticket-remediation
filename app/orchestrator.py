@@ -85,6 +85,10 @@ class OrchestrationAgent:
                 print("Planner returned playbook_id='0' (No suitable playbook). Escalating to human.")
                 if run_id and self.pipeline_repo:
                     await self.pipeline_repo.complete(run_id, "awaiting_approval", "No suitable playbook found")
+                
+                # Signal ServiceNow to escalate
+                await self.closure.escalate_manual(incident_number, "No suitable playbook determined by Planner agent.")
+
                 return OrchestratorResponse(
                     status="awaiting_approval",
                     incident=ctx.incident.number,
@@ -122,7 +126,8 @@ class OrchestrationAgent:
                 # Map validation decision to pipeline status
                 # 'success' -> 'success', 'rollback' -> 'error' (if rollback happened), 'failure' -> 'error'
                 db_status = "success" if final_status == "success" else "error"
-                await self.pipeline_repo.complete(run_id, db_status, f"Completed with status: {final_status}")
+                error_msg = None if db_status == "success" else f"Completed with status: {final_status}"
+                await self.pipeline_repo.complete(run_id, db_status, error_msg)
 
             return OrchestratorResponse(
                 status=final_status,

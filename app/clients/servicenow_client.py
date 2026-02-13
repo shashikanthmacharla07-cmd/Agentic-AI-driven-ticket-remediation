@@ -140,6 +140,36 @@ class ServiceNowClient:
             resp.raise_for_status()
             return resp.status_code in (200, 204)
 
+    async def escalate_incident(self, number: str, reason: str) -> bool:
+        """
+        Escalate incident by setting state to 'On Hold' (3) and adding work notes.
+        This removes it from the 'New' (1) queue so it's not picked up again by the fetcher.
+        """
+        # First, get sys_id for the incident number
+        sys_id = None
+        try:
+            incident = await self.get_incident(number)
+            if incident:
+                sys_id = incident.get("sys_id")
+        except Exception as e:
+            print(f"Failed to get sys_id for incident {number}: {e}")
+        
+        if not sys_id:
+             print(f"Cannot escalate incident {number}: sys_id not found.")
+             return False
+
+        payload = {
+            "work_notes": reason,
+            "state": "3",  # On Hold
+            "hold_reason": "4" # Awaiting Vendor/3rd party - closest mapping to 'Awaiting Human'
+        }
+        async with self._client() as client:
+            resp = await client.patch(f"api/now/table/incident/{sys_id}", json=payload)
+            if resp.status_code not in (200, 204):
+                print(f"Failed to escalate {number}. Status: {resp.status_code}, Response: {resp.text}")
+            resp.raise_for_status()
+            return resp.status_code in (200, 204)
+
     # ----------------------------
     # Health / utility
     # ----------------------------

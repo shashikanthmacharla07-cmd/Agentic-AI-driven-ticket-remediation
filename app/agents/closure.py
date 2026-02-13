@@ -38,6 +38,33 @@ class ClosureAgent:
         self.repo = repo
         self.sn_client = sn_client
 
+    async def escalate_manual(self, number: str, reason: str):
+        """
+        Manually escalate an incident without full context (e.g. from Orchestrator early exit).
+        """
+        print(f"[ClosureAgent] Manually escalating incident {number}: {reason}")
+        
+        # Create a closure record for tracking
+        closure = Closure(
+            incident_id=number,
+            closed_by="orchestrator",
+            resolution="escalated",
+            work_notes=f"Agentic AI: Escalating to manual review. Reason: {reason}",
+            resolution_summary="Automated remediation failed or not possible"
+        )
+        
+        if self.repo:
+            try:
+                await self.repo.insert(number, closure)
+            except Exception as e:
+                print(f"[ClosureAgent] Warning: Failed to insert closure for manual escalation: {e}")
+
+        if self.sn_client:
+            try:
+                await self.sn_client.escalate_incident(number, closure.work_notes)
+            except Exception as e:
+                print(f"[ClosureAgent] Warning: Failed to escalate ServiceNow incident: {e}")
+
     async def run(self, ctx: PipelineContext) -> PipelineContext:
         """
         OPTIMIZED: Deterministic closure - generate work notes from templates.
@@ -96,16 +123,13 @@ class ClosureAgent:
         if self.sn_client:
             print(f"[ClosureAgent] Attempting ServiceNow update: number={number}, user={getattr(self.sn_client, 'username', None)}")
             try:
-                exec_status = getattr(ctx.execution, 'status', 'unknown')
-                val_decision = getattr(ctx.validation, 'decision', 'unknown')
-
-                if exec_status == "successful" and val_decision == "success":
+                if resolution == "resolved":
                     print(f"[ClosureAgent] Execution and validation successful. Closing incident.")
                     await self.sn_client.update_incident(number, closure.work_notes, closure.resolution_summary)
                 else:
-                    print(f"[ClosureAgent] Incident not resolved (Execution: {exec_status}, Validation: {val_decision}). Adding work notes only.")
-                    note = (closure.work_notes or "") + "\n\n" + (closure.resolution_summary or "")
-                    await self.sn_client.add_work_notes(number, note.strip())
+                    print(f"[ClosureAgent] Incident not resolved (Resolution: {resolution}). Escalating.")
+                    # Use escalate_incident for non-resolved cases to change state to On Hold
+                    await self.sn_client.escalate_incident(number, closure.work_notes)
             except Exception as e:
                 print(f"[ClosureAgent] Warning: Failed to update ServiceNow incident: {e}")
 
