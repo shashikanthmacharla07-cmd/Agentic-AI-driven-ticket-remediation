@@ -33,132 +33,31 @@ prompt = ChatPromptTemplate.from_messages([
 parser = JsonOutputParser(pydantic_object=Plan)
 
 class PlannerAgent:
+
     def __init__(self, repo: PlanRepository, awx_client: AWXClient):
         self.repo = repo
         self.awx_client = awx_client
-        
-        # Keyword-based category mapping for dynamic playbook discovery
-        # Instead of hardcoding playbook names/IDs, we define keywords that match
-        # against AWX playbook names and descriptions dynamically
-        self.category_keywords = {
-            "high_cpu": {
-                "keywords": ["cpu", "utilization", "process", "top", "kill"],
-                "priority": 10,
-                "description": "High CPU utilization remediation"
-            },
-            "high_memory": {
-                "keywords": ["memory", "ram", "oom", "heap", "leak"],
-                "priority": 10,
-                "description": "Memory issues remediation"
-            },
-            "disk_full": {
-                "keywords": ["disk", "filesystem", "var", "cleanup", "space", "storage", "log"],
-                "priority": 10,
-                "description": "Disk space cleanup"
-            },
-            "service_down": {
-                "keywords": ["restart", "service", "start", "stop", "systemctl"],
-                "priority": 8,
-                "description": "Service restart"
-            },
-            "database_down": {
-                "keywords": ["database", "db", "postgres", "mysql", "mongo", "redis"],
-                "priority": 8,
-                "description": "Database remediation"
-            },
-            "application_crash": {
-                "keywords": ["app", "application", "restart", "deploy"],
-                "priority": 7,
-                "description": "Application restart"
-            },
-            "network_error": {
-                "keywords": ["network", "connectivity", "firewall", "port"],
-                "priority": 6,
-                "description": "Network troubleshooting"
-            },
-        }
-        
-        # Cache for resolved playbooks (category -> playbook mapping)
-        self._playbook_cache = {}
-        self._cache_timestamp = None
-        self._cache_ttl = 300  # 5 minutes
 
 
-    def _match_playbook_to_category(self, playbooks: List[dict], category: str, detected_os: str = None) -> Optional[dict]:
-        """
-        Dynamically match a playbook from AWX to an incident category using keywords.
-        Returns the best matching playbook or None.
-        """
-        if category not in self.category_keywords:
-            return None
-        
-        category_info = self.category_keywords[category]
-        keywords = category_info["keywords"]
-        
-        best_match = None
-        best_score = 0
-        
-        for pb in playbooks:
-            pb_text = (pb.get("name", "") + " " + (pb.get("description") or "")).lower()
-            
-            # OS Check
-            if detected_os:
-                if detected_os == "linux" and "windows" in pb_text:
-                    continue
-                if detected_os == "windows" and "linux" in pb_text:
-                    continue
+    def _create_escalation_plan(self, ctx: PipelineContext, reason: str) -> PipelineContext:
+        """Create a plan that signals escalation (playbook_id='0')"""
+        plan = Plan(
+            playbook_id="0",
+            playbook_name=reason,
+            prechecks=[],
+            rollback_steps=[],
+            risk_score=0.0,
+            eligibility="human-only"
+        )
+        ctx.plan = plan
+        return ctx
 
-            # Count keyword matches
-            score = sum(1 for kw in keywords if kw in pb_text)
-            
-            # Bonus for exact category name match
-            if category.replace("_", "-") in pb_text or category.replace("_", " ") in pb_text:
-                score += 3
-            
-            if score > best_score:
-                best_score = score
-                best_match = pb
-        
-        return best_match if best_score > 0 else None
 
-    def _get_playbook_for_classification(self, category: str, playbooks: List[dict], detected_os: str = None) -> Optional[dict]:
-        """
-        Dynamically map incident category to appropriate AWX playbook.
-        Uses keyword matching against actual AWX playbooks.
-        Respects OS constraints if detected_os is provided.
-        """
-        # Try direct category match first
-        match = self._match_playbook_to_category(playbooks, category, detected_os=detected_os)
-        if match:
-            return match
-        
-        # Try related categories for storage/disk issues
-        if any(keyword in category.lower() for keyword in ["disk", "storage", "filesystem", "space"]):
-            match = self._match_playbook_to_category(playbooks, "disk_full", detected_os=detected_os)
-            if match:
-                return match
-        
-        # Try CPU-related categories
-        if any(keyword in category.lower() for keyword in ["cpu", "utilization", "load"]):
-            match = self._match_playbook_to_category(playbooks, "high_cpu", detected_os=detected_os)
-            if match:
-                return match
-        
-        # Try memory-related categories
-        if any(keyword in category.lower() for keyword in ["memory", "ram", "oom"]):
-            match = self._match_playbook_to_category(playbooks, "high_memory", detected_os=detected_os)
-            if match:
-                return match
-        
-        return None
 
     def _filter_playbooks(self, ctx: PipelineContext, playbooks: List[dict]) -> List[dict]:
         """
-        Filter playbooks to reduce noise for the LLM.
-        Criteria:
-        1. Always include a default/demo playbook if available (ID 7).
-        2. Score others by keyword matching with incident description/classification.
-        3. Return top N (e.g. 5).
+        Filter playbooks only by OS compatibility.
+        No keyword scoring - we let the LLM decide from all available/compatible playbooks.
         """
         if not playbooks:
             return []
@@ -172,10 +71,14 @@ class PlannerAgent:
                 print(f"Planner: Filtering playbooks for OS '{detected_os}' (hostname: {hostname})")
         
         if detected_os:
-            original_count = len(playbooks)
             filtered_by_os = []
             excluded = []
             for pb in playbooks:
+                # Explicitly filter out Default/Demo playbooks
+                if str(pb.get("id")) == "7" or "demo" in pb.get("name", "").lower():
+                    print(f"Planner: Explicitly excluding Demo playbook: {pb.get('name')} (ID: {pb.get('id')})")
+                    continue
+
                 pb_text = (pb.get("name", "") + " " + (pb.get("description") or "")).lower()
                 # If OS is linux, skip windows playbooks
                 if detected_os == "linux" and "windows" in pb_text:
@@ -186,37 +89,21 @@ class PlannerAgent:
                     excluded.append(pb.get("name"))
                     continue
                 filtered_by_os.append(pb)
-            playbooks = filtered_by_os
+            
             if excluded:
                 print(f"Planner: Excluded {len(excluded)} playbooks due to OS mismatch: {excluded}")
-
-        # Keywords from incident
-        text = (ctx.incident.short_description + " " + ctx.incident.description).lower()
-        if ctx.classification and ctx.classification.labels:
-             text += " " + " ".join(ctx.classification.labels)
-        
-        scored = []
-        
-        for pb in playbooks:
-            # Score
-            score = 0
-            pb_text = (pb.get("name", "") + " " + pb.get("description", "")).lower()
             
-            # Simple token overlap
-            # Updated: changed > 3 to >= 2 to capture 'cpu', 'vm', etc.
-            incident_tokens = set(w for w in text.split() if len(w) >= 2)
-            matches = sum(1 for t in incident_tokens if t in pb_text)
-            score += matches
-
-            scored.append((score, pb))
-
-        # Sort by score desc
-        scored.sort(key=lambda x: x[0], reverse=True)
+            return filtered_by_os
         
-        # Take top 5 from scored (increased from 3 to give LLM more options)
-        top_candidates = [x[1] for x in scored[:5]]
+        # If no OS detected, still filter generic/demo playbooks
+        final_list = []
+        for pb in playbooks:
+             if str(pb.get("id")) == "7" or "demo" in pb.get("name", "").lower():
+                 print(f"Planner: Explicitly excluding Demo playbook: {pb.get('name')} (ID: {pb.get('id')})")
+                 continue
+             final_list.append(pb)
 
-        return top_candidates
+        return final_list
 
     async def run(self, ctx: PipelineContext, playbooks: List[dict] = None) -> PipelineContext:
         if not ctx.classification:
@@ -230,6 +117,11 @@ class PlannerAgent:
 
         # FILTERING STEP
         filtered_playbooks = self._filter_playbooks(ctx, playbooks)
+        
+        # If no playbooks match the incident criteria (OS, keywords), escalate immediately
+        if not filtered_playbooks:
+            print("Planner: No playbooks matched filtering criteria. Escalating to human.")
+            return self._create_escalation_plan(ctx, "No suitable playbook found after filtering")
         
         formatted_playbooks = []
         for pb in filtered_playbooks:
@@ -248,14 +140,19 @@ class PlannerAgent:
         # Compose prompt WITHOUT explicit suggestion
         prompt_pure_llm = ChatPromptTemplate.from_messages([
             ("system",
-             "You are a remediation planner. You have access to the following AWX playbooks: {playbooks}.\n"
-             "Analyze the incident and classification, then choose the most suitable playbook from the list.\n"
-             "If no playbook is suitable, set playbook_id to '0' and playbook_name to 'No suitable playbook'.\n"
+             "You are an intelligent remediation planner. You have access to the following AWX playbooks: {playbooks}.\n"
+             "Your goal is to carefully analyze the incident details and selecting the *exact* playbook that resolves the specific issue.\n"
+             "Instructions:\n"
+             "1. Read the incident description and short_description carefully.\n"
+             "2. Read the names and descriptions of ALL provided playbooks.\n"
+             "3. If a playbook explicitly matches the issue (e.g., 'install ntp' matches a playbook for ntp installation), select it.\n"
+             "4. If NO playbook matches the specific issue, YOU MUST set playbook_id to '0' and playbook_name to 'No suitable playbook'.\n"
+             "5. Do NOT select a playbook just because it mentions 'linux' or 'cpu' if it doesn't solve the specific problem described.\n"
              "Return only JSON. Always include both playbook_id and playbook_name in your output."),
             ("user",
              "Incident: {incident}\nClassification: {classification}\n\n"
              "Return JSON with keys: playbook_id (string), playbook_name (string), prechecks (list), rollback_steps (list), risk_score (0-1), eligibility (auto or human-only)."
-            )
+             )
         ])
 
         msg = await llm.ainvoke(prompt_pure_llm.format(**inputs))
@@ -273,40 +170,7 @@ class PlannerAgent:
 
             print(f"Post-parsing plan data: {plan_data}")
 
-            # Validate/Override with dynamic playbook matching
-            if ctx.classification and ctx.classification.labels:
-                detected_os = ctx.incident.context.get("os") if ctx.incident.context else None
-                
-                # Prioritize labels based on incident description matching
-                # This ensures CPU incidents get CPU playbooks even if memory label is also present
-                incident_text = f"{ctx.incident.short_description or ''} {ctx.incident.description or ''}".lower()
-                
-                label_scores = []
-                for label in ctx.classification.labels:
-                    score = 0
-                    label_keywords = label.replace("_", " ").split()
-                    for kw in label_keywords:
-                        if kw in incident_text:
-                            score += 1
-                    # Boost score for exact keyword presence
-                    if label == "high_cpu" and "cpu" in incident_text:
-                        score += 5
-                    if label == "high_memory" and "memory" in incident_text:
-                        score += 5
-                    label_scores.append((label, score))
-                
-                # Sort by score descending - highest relevance first
-                label_scores.sort(key=lambda x: x[1], reverse=True)
-                print(f"Label priority scores: {label_scores}")
-                
-                # Use dynamic matching with prioritized labels
-                for label, score in label_scores:
-                    matched_pb = self._get_playbook_for_classification(label, playbooks, detected_os=detected_os)
-                    if matched_pb:
-                        plan_data["playbook_id"] = str(matched_pb["id"])
-                        plan_data["playbook_name"] = matched_pb["name"]
-                        print(f"Dynamic match found: {label} (score: {score}) -> {matched_pb['name']} (ID: {matched_pb['id']})")
-                        break
+            # Removed manual override logic - relying completely on LLM
 
             # Ensure prechecks and rollback_steps are lists
             if not plan_data.get("prechecks"):
@@ -351,5 +215,3 @@ class PlannerAgent:
 
         ctx.plan = plan
         return ctx
-
-

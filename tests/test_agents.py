@@ -112,39 +112,57 @@ class TestClassifierAgentHelpers:
 class TestPlannerAgentHelpers:
     """Tests for PlannerAgent helper methods."""
 
-    def test_get_playbook_for_classification_disk(self):
+    @pytest.fixture
+    def mock_playbooks(self):
+        return [
+            {"id": "1", "name": "Clean up var filesystem", "description": "Responds to disk_full events"},
+            {"id": "2", "name": "Linux_Kill_CPU_Utilization", "description": "Kills high CPU processes"},
+            {"id": "3", "name": "Create New User", "description": "Onboard a new user to the system"},
+            {"id": "7", "name": "Demo Job Template", "description": "Demo"}
+        ]
+
+    def test_get_playbook_for_classification_disk(self, mock_playbooks):
         """Test playbook mapping for disk issues."""
         from app.agents.planner import PlannerAgent
         agent = PlannerAgent(repo=None, awx_client=None)
         
-        result = agent._get_playbook_for_classification("disk_full")
+        result = agent._get_playbook_for_classification("disk_full", mock_playbooks)
         assert result is not None
         assert result["name"] == "Clean up var filesystem"
 
-    def test_get_playbook_for_classification_storage(self):
+    def test_get_playbook_for_classification_storage(self, mock_playbooks):
         """Test playbook mapping for storage issues."""
         from app.agents.planner import PlannerAgent
         agent = PlannerAgent(repo=None, awx_client=None)
         
-        result = agent._get_playbook_for_classification("storage issue")
+        result = agent._get_playbook_for_classification("storage issue", mock_playbooks)
         assert result is not None
         assert result["name"] == "Clean up var filesystem"
 
-    def test_get_playbook_for_classification_cpu(self):
+    def test_get_playbook_for_classification_cpu(self, mock_playbooks):
         """Test playbook mapping for CPU issues."""
         from app.agents.planner import PlannerAgent
         agent = PlannerAgent(repo=None, awx_client=None)
         
-        result = agent._get_playbook_for_classification("high_cpu")
+        result = agent._get_playbook_for_classification("high_cpu", mock_playbooks)
         assert result is not None
         assert result["name"] == "Linux_Kill_CPU_Utilization"
 
-    def test_get_playbook_for_classification_unknown(self):
+    def test_get_playbook_for_classification_create_user(self, mock_playbooks):
+        """Test playbook mapping for user creation."""
+        from app.agents.planner import PlannerAgent
+        agent = PlannerAgent(repo=None, awx_client=None)
+        
+        result = agent._get_playbook_for_classification("create_user", mock_playbooks)
+        assert result is not None
+        assert result["name"] == "Create New User"
+
+    def test_get_playbook_for_classification_unknown(self, mock_playbooks):
         """Test playbook mapping returns None for unknown category."""
         from app.agents.planner import PlannerAgent
         agent = PlannerAgent(repo=None, awx_client=None)
         
-        result = agent._get_playbook_for_classification("unknown_category")
+        result = agent._get_playbook_for_classification("unknown_category", mock_playbooks)
         assert result is None
 
     def test_filter_playbooks_by_os_linux(self, sample_incident, sample_classification, sample_playbooks):
