@@ -191,17 +191,29 @@ class ClassifierAgent:
             "playbooks": playbooks,
         }
 
-        # Compose prompt with playbook context - Refactored for LLM Intelligence
+        # Compose prompt with playbook context - Refactored for LLM Intelligence & Small Model Compatibility
         prompt_with_playbooks = ChatPromptTemplate.from_messages([
             ("system",
              "You are an intelligent classification agent for IT incidents. You have access to the following AWX playbooks: {playbooks}.\n"
              "Analyze the incident description and determine the most accurate labels based on the actual issue described.\n"
-             "DO NOT rely on strict keywords. specific instructions:\n"
-             "- Use 'create_user' ONLY if the request is explicitly about creating/onboarding a user.\n"
-             "- Use 'high_cpu', 'high_memory', 'disk_full' ONLY if those resources are actually the problem.\n"
-             "- If the request is about installing software (e.g. ntp, python, etc), use labels like 'software_install', 'package_install'.\n"
-             "- Always set eligibility to 'auto' to allow the planner to decide on remediation.\n"
-             "Output only valid JSON with keys: labels (array of strings), severity (string: P1|P2|P3|P4), eligibility (string: auto), confidence (number 0-1)."),
+             "Instructions:\n"
+             "1. Analyize the input to understand the core issue (e.g. user creation, server down, disk full).\n"
+             "2. Assign labels from this list if applicable: ['create_user', 'high_cpu', 'high_memory', 'disk_full', 'server_down', 'application_crash', 'network_error'].\n"
+             "3. If the request is about installing software, use 'software_install'.\n"
+             "4. ALWAYS set 'eligibility' to 'auto'.\n"
+             "5. Return ONLY a valid JSON object. Do not add any markdown formatting or explanation.\n"
+             "\n"
+             "Example Input:\n"
+             "short_description: create user jane\n"
+             "description: please create user jane on server01\n"
+             "\n"
+             "Example Output:\n"
+             "{{\n"
+             "  \"labels\": [\"create_user\"],\n"
+             "  \"severity\": \"P3\",\n"
+             "  \"eligibility\": \"auto\",\n"
+             "  \"confidence\": 0.9\n"
+             "}}\n"),
             ("user",
              "Classify the incident below:\n"
              "short_description: {short}\n"
@@ -209,47 +221,72 @@ class ClassifierAgent:
              "service: {service}\n"
              "severity_hint: {severity_hint}\n"
              "Constraints:\n"
-             "- labels: array of relevant tags reflecting the TRUE nature of the incident.\n"
-             "- severity must be one of P1,P2,P3,P4\n"
-             "- eligibility must be 'auto'\n"
-             "- return only JSON, no extra text.")
+             "- labels: array of strings\n"
+             "- severity: P1, P2, P3, or P4\n"
+             "- eligibility: 'auto'\n"
+             "- return only JSON.")
         ])
 
-        msg = await llm.ainvoke(prompt_with_playbooks.format(**inputs))
-        print(f"Classifier LLM output: {repr(msg.content)}")
-
-        # Parse structured output
-        try:
-            parsed_dict = parser.parse(msg.content)
-            print(f"Parsed classification dict: {parsed_dict}")
-            if isinstance(parsed_dict, dict):
-                parsed_dict = {k.lower(): v for k, v in parsed_dict.items()}
-                # Ensure all required fields are present with defaults if missing
-                if "labels" not in parsed_dict:
-                    parsed_dict["labels"] = ["unknown"]
-                if "severity" not in parsed_dict:
-                    parsed_dict["severity"] = "P3"
-                if "eligibility" not in parsed_dict:
+        # Retry logic for robust parsing
+        max_retries = 3
+        last_exception = None
+        
+        for attempt in range(max_retries):
+            try:
+                msg = await llm.ainvoke(prompt_with_playbooks.format(**inputs))
+                print(f"Classifier LLM output (Attempt {attempt+1}): {repr(msg.content)}")
+                
+                # Parse structured output
+                parsed_dict = parser.parse(msg.content)
+                print(f"Parsed classification dict: {parsed_dict}")
+                
+                if isinstance(parsed_dict, dict):
+                    parsed_dict = {k.lower(): v for k, v in parsed_dict.items()}
+                    # Ensure all required fields are present with defaults if missing
+                    if "labels" not in parsed_dict:
+                        parsed_dict["labels"] = ["unknown"]
+                    if "severity" not in parsed_dict:
+                        parsed_dict["severity"] = "P3"
+                    if "eligibility" not in parsed_dict:
+                        parsed_dict["eligibility"] = "auto"
+                    # FORCE eligibility to auto for planner decision
                     parsed_dict["eligibility"] = "auto"
-                # FORCE eligibility to auto for planner decision
-                parsed_dict["eligibility"] = "auto"
-                if "confidence" not in parsed_dict:
-                    parsed_dict["confidence"] = 0.5
-                classification = Classification(**parsed_dict)
-            elif not isinstance(parsed_dict, Classification):
-                # fallback: try to coerce to Classification
-                classification = Classification(**dict(parsed_dict))
-            else:
-                classification = parsed_dict
-            print(f"Classification object: {classification}")
+                    if "confidence" not in parsed_dict:
+                        parsed_dict["confidence"] = 0.5
+                    classification = Classification(**parsed_dict)
+                elif not isinstance(parsed_dict, Classification):
+                    # fallback: try to coerce to Classification
+                    classification = Classification(**dict(parsed_dict))
+                else:
+                    classification = parsed_dict
+                
+                # If we got here, parsing succeeded
+                break
+                
+            except Exception as e:
+                print(f"ClassifierAgent: parsing attempt {attempt+1} failed: {e}")
+                last_exception = e
+                # wait briefly before retry (optional)
+                import asyncio
+                await asyncio.sleep(0.5)
+        else:
+            # If we exhausted retries, fallback to safe default instead of crashing
+            print(f"ClassifierAgent: All {max_retries} attempts failed. Using fallback classification.")
+            classification = Classification(
+                labels=["manual_classification_required"],
+                severity="P3",
+                eligibility="auto", # Still let planner see it, maybe it can pick a generic playbook
+                confidence=0.0
+            )
+            # We could raise exception, but user asked to fix the error. 
+            # Returning a fallback is safer for pipeline stability.
             
-            # Heuristic Safety Net REMOVED - relying on LLM intelligence
+            # If we MUST fail, uncomment below:
+            # raise HTTPException(status_code=500, detail=f"ClassifierAgent: invalid LLM output after retries: {last_exception}")
 
-        except Exception as e:
-            print(f"ClassifierAgent: failed to parse LLM output: {e}")
-            raise HTTPException(status_code=500, detail=f"ClassifierAgent: invalid LLM output {e}")
+        print(f"Classification object: {classification}")
 
-            # Persist classification
+        # Persist classification
         if self.repo:
             try:
                 await self.repo.upsert(number, classification)

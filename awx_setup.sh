@@ -2,7 +2,7 @@
 # AWX Playbook Setup Script
 # This script creates sample playbooks in AWX for incident remediation
 
-AWX_URL="http://172.16.0.5:30080"
+AWX_URL="http://20.187.146.30:8080"
 AWX_TOKEN="iECGkeWAarxFlRqRIpQ9tspYrd0s6N"
 
 echo "Testing AWX connectivity..."
