@@ -24,17 +24,16 @@ prompt = ChatPromptTemplate.from_messages([
              "You are a remediation planner. Your job is to select the correct AWX playbook for an IT incident.\n"
              "You have access to these playbooks: {playbooks}.\n"
              "\n"
-             "RULES:\n"
-             "1. Analyze the incident 'labels'.\n"
-             "2. Select the playbook that EXPERTLY matches the label using this EXACT mapping:\n"
-             "   - 'service_down' -> 'linux-start-webservice' (or similar service start playbook)\n"
-             "   - 'high_cpu' -> 'linux-cpu-cleanup'\n"
-             "   - 'high_memory' -> 'linux-high-memory-cleanup'\n"
-             "   - 'disk_full' / 'var_filesystem_full' -> 'linux-var-filesystem-cleanup' / 'disk-cleanup'\n"
-             "   - 'create_user' -> 'linux_create_user'\n"
-             "3. Do NOT deviate from this mapping. Do NOT use CPU/Memory playbooks for disk issues.\n"
-             "4. If no playbook matches the label, return playbook_id='0'.\n"
-             "\n"
+             "DECISION TREE:\n"
+             "1. Read the incident 'labels' from the input.\n"
+             "2. Match the label to the correct playbook using these rules:\n"
+             "   - IF label is 'service_down' OR 'server_down' -> SELECT playbook 'linux-start-webservice'\n"
+             "   - IF label is 'high_cpu' -> SELECT playbook 'linux-cpu-cleanup'\n"
+             "   - IF label is 'high_memory' -> SELECT playbook 'linux-high-memory-cleanup'\n"
+             "   - IF label includes 'disk' OR 'filesystem' -> SELECT playbook 'linux-var-filesystem-cleanup'\n"
+             "   - IF label is 'create_user' -> SELECT playbook 'linux_create_user'\n"
+             "3. Return the ID of the selected playbook.\n"
+             "4. If no playbook matches, return playbook_id='0'.\n"
              "OUTPUT FORMAT:\n"
              "You must return a single valid JSON object. Do not include any explanation or conversational text.\n"
              "Example:\n"
@@ -144,6 +143,61 @@ class PlannerAgent:
         if not filtered_playbooks:
             print("Planner: No playbooks matched filtering criteria. Escalating to human.")
             return self._create_escalation_plan(ctx, "No suitable playbook found after filtering")
+
+        # Helper to find playbook ID by fuzzy name match
+        def find_playbook_id(name_part: str) -> Optional[str]:
+            for pb in filtered_playbooks:
+                if name_part in pb.get("name", "").lower():
+                    print(f"Planner: Deterministic match found: {pb.get('name')} (ID: {pb.get('id')})")
+                    return str(pb.get("id"))
+            return None
+
+        # DETERMINISTIC SELECTION (Anti-Hallucination Layer)
+        # Check labels for known mappings to enforce reliability
+        labels = ctx.classification.labels
+        selected_id = None
+        playbook_reason = ""
+        
+        if any(l in labels for l in ['service_down', 'server_down']):
+             selected_id = find_playbook_id("start-webservice")
+             playbook_reason = "service_down_rule"
+        elif any(l in labels for l in ['create_user']):
+             selected_id = find_playbook_id("create_user") # matches linux_create_user
+             playbook_reason = "create_user_rule"
+        elif any(l in labels for l in ['high_cpu']):
+             selected_id = find_playbook_id("cpu-cleanup")
+             playbook_reason = "high_cpu_rule"
+        elif any(l in labels for l in ['high_memory']):
+             selected_id = find_playbook_id("memory-cleanup")
+             playbook_reason = "high_memory_rule"
+        elif any(l in labels for l in ['disk_full', 'var_filesystem_full', 'var_full']):
+             selected_id = find_playbook_id("var-filesystem-cleanup")
+             playbook_reason = "disk_full_rule"
+
+        if selected_id:
+             print(f"Planner: Deterministic logic selected playbook ID {selected_id} based on reason: {playbook_reason}")
+             pb = next((p for p in filtered_playbooks if str(p["id"]) == selected_id), None)
+             if pb:
+                 plan = Plan(
+                     playbook_id=selected_id,
+                     playbook_name=pb.get("name"),
+                     prechecks=[],
+                     rollback_steps=[],
+                     risk_score=0.1,
+                     eligibility="auto"
+                 )
+                 # Cache update if needed
+                 if self.repo:
+                     try:
+                         await self.repo.upsert(number, plan)
+                     except Exception as e:
+                         print(f"Failed to upsert plan: {e}")
+                 
+                 ctx.plan = plan
+                 return ctx
+             else:
+                 print(f"Planner: Deterministic ID {selected_id} valid but playbook object not found in filtered list. Falling back to LLM.")
+
         
         formatted_playbooks = []
         for pb in filtered_playbooks:
