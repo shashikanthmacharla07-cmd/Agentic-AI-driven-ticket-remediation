@@ -11,9 +11,10 @@ from app.models import PipelineContext, Incident
 from app.data.repositories import IncidentRepository
 
 llm = ChatOllama(
-    model=os.getenv("LLM_MODEL"),
+    model=os.getenv("LLM_MODEL", "llama2:7b"),
     base_url=os.getenv("OLLAMA_BASE_URL"),
     temperature=0,
+    num_thread=2,
 )
 
 prompt = ChatPromptTemplate.from_messages([

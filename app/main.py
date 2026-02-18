@@ -73,7 +73,7 @@ async def lifespan(app: FastAPI):
     snow_pass = os.getenv("SNOW_PASS")
 
     try:
-        app.state.pg_pool = await asyncpg.create_pool(dsn=pg_dsn, min_size=1, max_size=10)
+        app.state.pg_pool = await asyncpg.create_pool(dsn=pg_dsn, min_size=4, max_size=20)
     except Exception as e:
         print(f"Failed to create PG pool: {e}")
         app.state.pg_pool = None
@@ -167,7 +167,7 @@ async def inference(request: PromptRequest):
         async with httpx.AsyncClient(timeout=30.0) as client:
             r = await client.post(
                 f"{ollama_host}/api/generate",
-                json={"model": "phi:2.7b", "prompt": prompt, "stream": True},
+                json={"model": os.getenv("LLM_MODEL", "llama2:7b"), "prompt": prompt, "stream": True},
                 headers={"Accept": "application/json"}
             )
             if r.status_code == 200:
@@ -193,7 +193,7 @@ async def inference_fast(request: PromptRequest):
         async with httpx.AsyncClient(timeout=120.0) as client:
             r = await client.post(
                 f"{ollama_host}/api/generate",
-                json={"model": "phi:2.7b", "prompt": prompt, "stream": False},
+                json={"model": os.getenv("LLM_MODEL", "llama2:7b"), "prompt": prompt, "stream": False},
                 headers={"Accept": "application/json"}
             )
             if r.status_code == 200:
@@ -213,7 +213,7 @@ async def inference_test():
         async with httpx.AsyncClient(timeout=30.0) as client:
             r = await client.post(
                 f"{ollama_host}/api/generate",
-                json={"model": "phi:2.7b", "prompt": sample_prompt, "stream": True},
+                json={"model": os.getenv("LLM_MODEL", "llama2:7b"), "prompt": sample_prompt, "stream": True},
                 headers={"Accept": "application/json"}
             )
             latency = round((time.time() - start) * 1000, 2)
@@ -229,7 +229,7 @@ async def inference_test():
                 return {
                     "status": "ok",
                     "latency_ms": latency,
-                    "model": "phi:2.7b",
+                    "model": os.getenv("LLM_MODEL", "llama2:7b"),
                     "sample_prompt": sample_prompt,
                     "response_preview": output[:200]
                 }

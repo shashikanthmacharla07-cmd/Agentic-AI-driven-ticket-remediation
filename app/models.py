@@ -17,6 +17,7 @@ class Incident(BaseModel):
 
 class Classification(BaseModel):
     labels: List[str]
+    intent: str
     confidence: float
     eligibility: Literal["auto", "human-only"]
     severity: str

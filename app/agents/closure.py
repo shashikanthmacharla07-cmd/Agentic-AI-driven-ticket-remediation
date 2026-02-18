@@ -11,9 +11,10 @@ from app.data.repositories import ClosureRepository
 from app.clients.servicenow_client import ServiceNowClient
 
 llm = ChatOllama(
-    model=os.getenv("LLM_MODEL", "llama3"),
+    model=os.getenv("LLM_MODEL", "llama2:7b"),
     base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
     temperature=0,
+    num_thread=2,
 )
 
 prompt = ChatPromptTemplate.from_messages([

@@ -10,22 +10,23 @@ from app.models import PipelineContext, Classification
 from app.data.repositories import ClassificationRepository
 
 llm = ChatOllama(
-    model=os.getenv("LLM_MODEL", "llama3"),
+    model=os.getenv("LLM_MODEL", "llama2:7b"),
     base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
     temperature=0,
+    num_thread=2,
 )
 
 prompt = ChatPromptTemplate.from_messages([
     ("system",
-     "You are a classification agent for IT incidents. Output only valid JSON with keys: labels (array of strings), severity (string: P1|P2|P3|P4), eligibility (string: auto or human-only), confidence (number 0-1).\n"
-     "If the incident is about high CPU, CPU utilization, or CPU usage, always include 'high_cpu' in labels.\n"
-     "If the incident is about 'VM availability', 'availability' issues, or 'VM unreachable', always include 'vm_availability' and 'high_cpu' in labels.\n"
-     "If the incident is about high memory, memory usage, or memory utilization, always include 'high_memory' in labels.\n"
-     "If the incident is about disk or filesystem issues (disk full, no space, cleanup needed, /var full, /tmp full), use labels: var_full (if /var is mentioned), tmp_full (if /tmp is mentioned), disk_full, storage_full, filesystem_cleanup.\n"
-     "For user creation, onboarding, or adding new users, use labels: 'create_user'.\n"
-     "For server down, use 'server_down'. For database down, use 'database_down'. For network issues, use 'network_error'. For application crash, use 'application_crash'.\n"
-     "Always set eligibility to 'auto' to allow the planner to decide on remediation.\n"
-     "Return only JSON, no extra text."),
+     "You are a classification agent for IT incidents. Output only valid JSON with keys: intent (string), labels (array of strings), severity (string: P1|P2|P3|P4), eligibility (string: auto or human-only), confidence (number 0-1).\n"
+     "First, describe the user's intent in a short natural language sentence (e.g., 'User wants to reset password', 'System needs disk cleanup').\n"
+     "STRICT CLASSIFICATION RULES:\n"
+     "1. Analyze the intent.\n"
+     "2. Map keywords to labels using this table:\n"
+     "   - 'web service', 'service down', 'service stopped', 'process' -> ['service_down'] (CRITICAL: If it says 'service', DO NOT use 'server_down')\n"
+     "   - 'server down', 'server unreachable', 'vm down' -> ['server_down']\n"
+     "3. Always set eligibility to 'auto'.\n"
+     "4. Return only JSON, no extra text."),
     ("user",
      "Classify the incident below:\n"
      "short_description: {short}\n"
@@ -33,7 +34,8 @@ prompt = ChatPromptTemplate.from_messages([
      "service: {service}\n"
      "severity_hint: {severity_hint}\n"
      "Constraints:\n"
-     "- labels: array of relevant tags.\n"
+      "- intent: short description of what needs to be done.\n"
+      "- labels: array of relevant tags derived from intent.\n"
      "- severity must be one of P1,P2,P3,P4\n"
      "- severity must be one of P1,P2,P3,P4\n"
      "- eligibility must be 'auto' (we defer to planner for escalation)\n"
@@ -198,7 +200,8 @@ class ClassifierAgent:
              "Analyze the incident description and determine the most accurate labels based on the actual issue described.\n"
              "Instructions:\n"
              "1. Analyize the input to understand the core issue (e.g. user creation, server down, disk full).\n"
-             "2. Assign labels from this list if applicable: ['create_user', 'high_cpu', 'high_memory', 'disk_full', 'server_down', 'application_crash', 'network_error'].\n"
+             "2. Define the 'intent' field as a concise summary of the requested action.\n"
+             "3. Based on the intent, assign labels from this list if applicable: ['create_user', 'high_cpu', 'high_memory', 'disk_full', 'server_down', 'application_crash', 'network_error'].\n"
              "3. If the request is about installing software, use 'software_install'.\n"
              "4. ALWAYS set 'eligibility' to 'auto'.\n"
              "5. Return ONLY a valid JSON object. Do not add any markdown formatting or explanation.\n"
@@ -209,6 +212,7 @@ class ClassifierAgent:
              "\n"
              "Example Output:\n"
              "{{\n"
+             "  \"intent\": \"Create a new user account for Jane\",\n"
              "  \"labels\": [\"create_user\"],\n"
              "  \"severity\": \"P3\",\n"
              "  \"eligibility\": \"auto\",\n"
@@ -221,7 +225,8 @@ class ClassifierAgent:
              "service: {service}\n"
              "severity_hint: {severity_hint}\n"
              "Constraints:\n"
-             "- labels: array of strings\n"
+             "- intent: string summary\n"
+             "- labels: array of strings based on intent\n"
              "- severity: P1, P2, P3, or P4\n"
              "- eligibility: 'auto'\n"
              "- return only JSON.")
@@ -251,6 +256,8 @@ class ClassifierAgent:
                         parsed_dict["eligibility"] = "auto"
                     # FORCE eligibility to auto for planner decision
                     parsed_dict["eligibility"] = "auto"
+                    if "intent" not in parsed_dict:
+                        parsed_dict["intent"] = "Unknown intent"
                     if "confidence" not in parsed_dict:
                         parsed_dict["confidence"] = 0.5
                     classification = Classification(**parsed_dict)
@@ -274,6 +281,7 @@ class ClassifierAgent:
             print(f"ClassifierAgent: All {max_retries} attempts failed. Using fallback classification.")
             classification = Classification(
                 labels=["manual_classification_required"],
+                intent="Failed to classify due to error",
                 severity="P3",
                 eligibility="auto", # Still let planner see it, maybe it can pick a generic playbook
                 confidence=0.0

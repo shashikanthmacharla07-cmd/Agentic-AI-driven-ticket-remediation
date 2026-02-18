@@ -13,20 +13,42 @@ from app.clients.awx_client import AWXClient
 
 
 llm = ChatOllama(
-    model=os.getenv("LLM_MODEL", "llama3"),
+    model=os.getenv("LLM_MODEL", "llama2:7b"),
     base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
     temperature=0,
+    num_thread=2,
 )
 
 prompt = ChatPromptTemplate.from_messages([
             ("system",
-             "You are a remediation planner. You have access to the following AWX playbooks: {playbooks}.\n"
-             "Analyze the incident and classification, then choose the most suitable playbook from the list.\n"
-             "If no playbook is suitable, set playbook_id to '0' and playbook_name to 'No suitable playbook'.\n"
-             "Return only JSON. Always include both playbook_id and playbook_name in your output."),
+             "You are a remediation planner. Your job is to select the correct AWX playbook for an IT incident.\n"
+             "You have access to these playbooks: {playbooks}.\n"
+             "\n"
+             "RULES:\n"
+             "1. Analyze the incident 'labels'.\n"
+             "2. Select the playbook that EXPERTLY matches the label using this EXACT mapping:\n"
+             "   - 'service_down' -> 'linux-start-webservice' (or similar service start playbook)\n"
+             "   - 'high_cpu' -> 'linux-cpu-cleanup'\n"
+             "   - 'high_memory' -> 'linux-high-memory-cleanup'\n"
+             "   - 'disk_full' / 'var_filesystem_full' -> 'linux-var-filesystem-cleanup' / 'disk-cleanup'\n"
+             "   - 'create_user' -> 'linux_create_user'\n"
+             "3. Do NOT deviate from this mapping. Do NOT use CPU/Memory playbooks for disk issues.\n"
+             "4. If no playbook matches the label, return playbook_id='0'.\n"
+             "\n"
+             "OUTPUT FORMAT:\n"
+             "You must return a single valid JSON object. Do not include any explanation or conversational text.\n"
+             "Example:\n"
+             "{{\n"
+             "  \"playbook_id\": \"9\",\n"
+             "  \"playbook_name\": \"linux-var-filesystem-cleanup\",\n"
+             "  \"prechecks\": [],\n"
+             "  \"risk_score\": 0.5,\n"
+             "  \"eligibility\": \"auto\"\n"
+             "}}"),
             ("user",
-             "Incident: {incident}\nClassification: {classification}\n\n"
-             "Return JSON with keys: playbook_id (string), playbook_name (string), prechecks (list), rollback_steps (list), risk_score (0-1), eligibility (auto or human-only)."
+             "Incident: {incident}\n"
+             "Classification: {classification}\n"
+             "Return ONLY JSON."
             )
         ])
 
@@ -131,31 +153,17 @@ class PlannerAgent:
         print(f"Playbooks sent to LLM ({len(formatted_playbooks)}/{len(playbooks)}): {formatted_playbooks}")
 
         # Prepare prompt inputs
+        incident_str = f"Short: {ctx.incident.short_description}\nDescription: {ctx.incident.description}\nOS: {ctx.incident.context.get('os', 'unknown')}"
+        classification_str = f"Intent: {ctx.classification.intent}\nLabels: {ctx.classification.labels}"
+
         inputs = {
-            "incident": ctx.incident.dict() if ctx.incident else {},
-            "classification": ctx.classification.dict() if ctx.classification else {},
+            "incident": incident_str,
+            "classification": classification_str,
             "playbooks": '\n'.join(formatted_playbooks),
         }
 
-        # Compose prompt WITHOUT explicit suggestion
-        prompt_pure_llm = ChatPromptTemplate.from_messages([
-            ("system",
-             "You are an intelligent remediation planner. You have access to the following AWX playbooks: {playbooks}.\n"
-             "Your goal is to carefully analyze the incident details and selecting the *exact* playbook that resolves the specific issue.\n"
-             "Instructions:\n"
-             "1. Read the incident description and short_description carefully.\n"
-             "2. Read the names and descriptions of ALL provided playbooks.\n"
-             "3. If a playbook explicitly matches the issue (e.g., 'install ntp' matches a playbook for ntp installation), select it.\n"
-             "4. If NO playbook matches the specific issue, YOU MUST set playbook_id to '0' and playbook_name to 'No suitable playbook'.\n"
-             "5. Do NOT select a playbook just because it mentions 'linux' or 'cpu' if it doesn't solve the specific problem described.\n"
-             "Return only JSON. Always include both playbook_id and playbook_name in your output."),
-            ("user",
-             "Incident: {incident}\nClassification: {classification}\n\n"
-             "Return JSON with keys: playbook_id (string), playbook_name (string), prechecks (list), rollback_steps (list), risk_score (0-1), eligibility (auto or human-only)."
-             )
-        ])
-
-        msg = await llm.ainvoke(prompt_pure_llm.format(**inputs))
+        # Use the robust global prompt
+        msg = await llm.ainvoke(prompt.format(**inputs))
         print(f"Planner LLM output: {repr(msg.content)}")
 
         # Parse structured output
